@@ -188,6 +188,21 @@ class CallLineTest(unittest.TestCase):
         self.assertEqual(render._first_line("ls -la"), "ls -la")
 
 
+class HeaderAndSidebarTest(unittest.TestCase):
+    def test_model_and_date_are_readable(self):
+        self.assertEqual(render._pretty_model("claude-opus-5-5[1m]"), "Claude Opus 5.5")
+        self.assertEqual(render._pretty_model("claude-haiku-4-5"), "Claude Haiku 4.5")
+        self.assertEqual(render._pretty_model("gpt-x"), "gpt-x")
+        self.assertEqual(render._pretty_date("2026-09-24T19:36:00.000Z"), "24 Sep 2026")
+
+    def test_sidebar_lists_badges_as_links_and_tips_come_before_the_goal(self):
+        html = render.render_html(sample_facts(), sample_annotations(), "review")
+        self.assertIn('<a class="badge-link detected" href="#e6">', html)
+        self.assertIn('<a class="badge-link judgment" href="#e8">', html)
+        self.assertLess(html.index('id="improvements"'), html.index('class="box goal-box"'))
+        self.assertNotIn("data-filter", html)
+
+
 class CliTest(TmpDirCase):
     def write(self, name, value):
         path = Path(self.tmp) / name
