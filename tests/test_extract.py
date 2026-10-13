@@ -1,6 +1,12 @@
+import io
+import json
+import os
 import unittest
+from contextlib import redirect_stdout
+from pathlib import Path
 
-from fixtures import CWD, HOME, SessionBuilder, TmpDirCase, marek_session, subagent_session
+from fixtures import (CWD, ENV_PASSWORD, GH_TOKEN, HOME, SECRET_KEY, SessionBuilder, TmpDirCase,
+                      marek_session, secrets_session, subagent_session)
 import extract
 
 
@@ -222,6 +228,81 @@ class BadgesTest(TmpDirCase):
                result={"type": "update", "filePath": f"{CWD}/src/a.ts", "structuredPatch": [{"lines": ["+x"]}]})
         b.tool("Bash", {"command": "git commit -am 'fix tests'"})
         self.assertEqual([e for e, _ in self.of_type(self.badges(b), "no_verification_since_edit")], ["e3"])
+
+
+class BuildFactsTest(TmpDirCase):
+    def facts(self, builder, **kwargs):
+        return extract.build_facts(builder.write(self.tmp), home=HOME, **kwargs)
+
+    def test_no_secret_survives(self):
+        facts = self.facts(secrets_session())
+        dump = json.dumps(facts, ensure_ascii=False) + extract.digest(facts)
+        for secret in (SECRET_KEY, GH_TOKEN, ENV_PASSWORD, "jane.doe@example.com", HOME + "/"):
+            self.assertNotIn(secret, dump)
+        self.assertEqual(sorted({r["type"] for r in facts["redactions"]}),
+                         ["api_key", "email", "env_value", "github_token"])
+        self.assertIn("[REDACTED:github_token#", facts["events"][2]["input_summary"])
+        self.assertEqual(facts["session"]["cwd"], "~/work/mail-app")
+
+    def test_keep_and_mask(self):
+        first = self.facts(secrets_session())
+        email_id = next(r["id"] for r in first["redactions"] if r["type"] == "email")
+        facts = self.facts(secrets_session(), keep=[email_id], masks=["mail-app"])
+        dump = json.dumps(facts)
+        self.assertIn("jane.doe@example.com", dump)
+        self.assertNotIn("mail-app", dump)
+        self.assertEqual(email_id, next(r["id"] for r in facts["redactions"] if r["type"] == "email"))
+
+    def test_badge_notes_are_redacted_and_internal_fields_stripped(self):
+        facts = self.facts(marek_session())
+        self.assertEqual(facts["factual_badges"][0]["note"], "Read ~/work/mail-app/node_modules/ollama/index.js")
+        for event in extract.walk(facts["events"]):
+            self.assertEqual([k for k in event if k.startswith("_")], [])
+
+    def test_digest_lists_badges_and_caps_long_lines(self):
+        b = marek_session()
+        b.tool("Bash", {"command": "cat <<'EOF'\n" + "x" * 50_000 + "\nEOF"})
+        text = extract.digest(self.facts(b))
+        self.assertIn("e3 control/outside_scope: Read ~/work/mail-app/node_modules/ollama/index.js", text)
+        self.assertIn("e1 USER Propose a strategy", text)
+        self.assertTrue(all(len(line) <= extract.DIGEST_TEXT + 40 for line in text.splitlines()))
+
+    def test_output_name(self):
+        session = {"id": "abc12345-x", "title": "Stratégie: tri des e-mails!", "started_at": "2026-10-13T10:00:00Z"}
+        self.assertEqual(extract.output_name(session), "2026-10-13-strategie-tri-des-e-mails")
+
+
+class CliTest(TmpDirCase):
+    def run_main(self, argv):
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            code = extract.main(argv)
+        return code, buffer.getvalue()
+
+    def test_extract_then_show(self):
+        path = marek_session().write(self.tmp)
+        out = Path(self.tmp) / "work"
+        code, stdout = self.run_main(["extract", "--session", str(path), "--out", str(out)])
+        self.assertEqual(code, 0)
+        summary = json.loads(stdout)
+        self.assertEqual(summary["output_name"], "2026-10-13-email-sorting-strategy")
+        self.assertTrue((out / "facts.json").exists() and (out / "digest.txt").exists())
+        code, stdout = self.run_main(["show", "--facts", str(out / "facts.json"), "e5"])
+        self.assertEqual((code, json.loads(stdout)["tool"]), (0, "Write"))
+
+    def test_list_and_find_sessions(self):
+        projects = Path(self.tmp) / "projects"
+        directory = extract.project_dir(CWD, projects)
+        SessionBuilder(session_id="old").user("Old work").write(directory)
+        marek_session().write(directory)
+        os.utime(directory / "old.jsonl", (1, 1))
+        sessions = extract.list_sessions(CWD, projects)
+        self.assertEqual([(s["id"], s["title"]) for s in sessions],
+                         [("sess-1", "Email sorting strategy"), ("old", "Old work")])
+        self.assertEqual(extract.find_session(CWD, None, projects), directory / "sess-1.jsonl")
+        self.assertEqual(extract.find_session(CWD, "old", projects), directory / "old.jsonl")
+        with self.assertRaises(extract.SessionNotFound):
+            extract.find_session(CWD, "nope", projects)
 
 
 if __name__ == "__main__":

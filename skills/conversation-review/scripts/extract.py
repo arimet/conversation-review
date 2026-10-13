@@ -10,6 +10,9 @@ from collections import Counter
 from datetime import date, datetime
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from redact import ENV_FILE, Redactor  # noqa: E402
+
 OUTPUT_PREVIEW_LINES = 20
 AGENT_TOOLS = ("Agent", "Task")
 PATH_KEYS = ("file_path", "notebook_path", "path")
@@ -430,3 +433,175 @@ def factual_badges(events, cwd, total_cost):
                 add(turn, "cost_spike",
                     f"${turn['turn_cost']:.2f} of ${total_cost:.2f} ({turn['turn_cost'] / total_cost:.0%})")
     return badges + verification_badges(events, cwd)
+
+
+PROJECTS_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))) / "projects"
+TEXT_FIELDS = ("text", "input_summary", "output")
+DIGEST_TEXT = 300
+
+
+class SessionNotFound(Exception):
+    pass
+
+
+def build_facts(path, keep=(), masks=(), home=None):
+    session, events, usage, warnings = parse_session(path)
+    metrics = compute_metrics(events, usage)
+    badges = factual_badges(events, session["cwd"], metrics["cost_usd_estimate"])
+    redactor = Redactor(str(Path.home()) if home is None else home, keep, masks)
+    for value in session.values():
+        redactor.scan(value if isinstance(value, str) else "")
+    for event in walk(events):
+        if event.get("tool") == "Read" and ENV_FILE.search((event.get("_input") or {}).get("file_path", "")):
+            redactor.learn_env_file(event.get("output", ""), event["id"])
+        for key in TEXT_FIELDS:
+            redactor.scan(event.get(key) or "", event["id"])
+        for change in event.get("files", []):
+            redactor.scan(change["path"], event["id"])
+    for badge in badges:
+        redactor.scan(badge["note"], badge["event_id"])
+    for event in walk(events):
+        for key in [k for k in event if k.startswith("_")]:
+            del event[key]
+        if "turn_cost" in event:
+            event["turn_cost"] = round(event["turn_cost"], 4)
+        for key in TEXT_FIELDS:
+            if isinstance(event.get(key), str):
+                event[key] = redactor.apply(event[key])
+        for change in event.get("files", []):
+            change["path"] = redactor.apply(change["path"])
+    for badge in badges:
+        badge["note"] = redactor.apply(badge["note"])
+    return {
+        "session": {k: redactor.apply(v) if isinstance(v, str) else v for k, v in session.items()},
+        "metrics": metrics,
+        "events": events,
+        "factual_badges": badges,
+        "redactions": redactor.report(),
+        "warnings": [redactor.apply(w) for w in warnings],
+    }
+
+
+def _digest_line(event):
+    if event["kind"] in ("user_message", "assistant_message", "system"):
+        who = {"user_message": "USER", "assistant_message": "AGENT", "system": "SYSTEM"}[event["kind"]]
+        body = event["text"]
+    else:
+        who = "SUBAGENT" if event["kind"] == "subagent" else "TOOL"
+        body = f"{event['tool']}: {event['input_summary']}"
+        body += "".join(f" [{f['path']} +{f['added']}/-{f['removed']}]" for f in event.get("files", []))
+        body += " -> ERROR" if event.get("error") else ""
+    body = " ".join(body.split())
+    return f"{who} {body[:DIGEST_TEXT]}{'…' if len(body) > DIGEST_TEXT else ''}"
+
+
+def digest(facts):
+    s, m = facts["session"], facts["metrics"]
+    lines = [
+        f"# {s['title']}",
+        f"model={s['model']} branch={s['branch']} cost~${m['cost_usd_estimate']} tool_calls={m['tool_calls']} "
+        f"files={m['files_written']} +{m['lines_added']}/-{m['lines_removed']}",
+        "",
+        "Factual badges:",
+    ]
+    lines += [f"  {b['event_id']} {b['axis']}/{b['type']}: {b['note'][:DIGEST_TEXT]}"
+              for b in facts["factual_badges"]] or ["  (none)"]
+    lines += ["", "Events (open one in full with: extract.py show --facts <facts.json> <id>):"]
+
+    def emit(events, depth):
+        for event in events:
+            lines.append("  " * depth + f"{event['id']} {_digest_line(event)}")
+            emit(event.get("children") or [], depth + 1)
+
+    emit(facts["events"], 0)
+    return "\n".join(lines) + "\n"
+
+
+def output_name(session):
+    title = unicodedata.normalize("NFKD", session["title"]).encode("ascii", "ignore").decode().lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", title).strip("-")[:60].strip("-") or session["id"][:8]
+    return f"{session['started_at'][:10] or date.today().isoformat()}-{slug}"
+
+
+def project_dir(cwd, projects_dir=None):
+    return Path(projects_dir or PROJECTS_DIR) / re.sub(r"[^A-Za-z0-9]", "-", cwd)
+
+
+def list_sessions(cwd, projects_dir=None):
+    directory = project_dir(cwd, projects_dir)
+    paths = sorted(directory.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    sessions = []
+    for path in paths:
+        stat = path.stat()
+        sessions.append({
+            "id": path.stem,
+            "path": str(path),
+            "title": _title(load_jsonl(path)[0]) or path.stem,
+            "modified": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M"),
+            "size_kb": stat.st_size // 1024,
+        })
+    return sessions
+
+
+def find_session(cwd, session=None, projects_dir=None):
+    if session and session.endswith(".jsonl") and Path(session).exists():
+        return Path(session)
+    sessions = list_sessions(cwd, projects_dir)
+    matches = [s for s in sessions if not session or s["id"].startswith(session)]
+    if not matches:
+        raise SessionNotFound(f"No session {session or ''} found in {project_dir(cwd, projects_dir)}".strip())
+    return Path(matches[0]["path"])
+
+
+def _print_json(value):
+    print(json.dumps(value, ensure_ascii=False, indent=1))
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    list_cmd = commands.add_parser("list", help="List recent sessions of a project")
+    list_cmd.add_argument("--cwd", default=os.getcwd())
+    list_cmd.add_argument("--limit", type=int, default=15)
+    extract_cmd = commands.add_parser("extract", help="Write facts.json and digest.txt")
+    extract_cmd.add_argument("--cwd", default=os.getcwd())
+    extract_cmd.add_argument("--session", help="Session id prefix or .jsonl path (default: most recent)")
+    extract_cmd.add_argument("--out", required=True)
+    extract_cmd.add_argument("--keep", action="append", default=[], help="Redaction id to leave visible")
+    extract_cmd.add_argument("--mask", action="append", default=[], help="Extra string to redact")
+    show_cmd = commands.add_parser("show", help="Print one event in full")
+    show_cmd.add_argument("--facts", required=True)
+    show_cmd.add_argument("event_id")
+    args = parser.parse_args(argv)
+
+    if args.command == "list":
+        _print_json(list_sessions(args.cwd)[: args.limit])
+        return 0
+    if args.command == "show":
+        facts = json.loads(Path(args.facts).read_text(encoding="utf-8"))
+        event = next((e for e in walk(facts["events"]) if e["id"] == args.event_id), None)
+        if event is None:
+            print(f"Unknown event {args.event_id}", file=sys.stderr)
+            return 1
+        _print_json(event)
+        return 0
+    try:
+        path = find_session(args.cwd, args.session)
+    except SessionNotFound as error:
+        print(error, file=sys.stderr)
+        for s in list_sessions(args.cwd)[:10]:
+            print(f"  {s['id']}  {s['modified']}  {s['title']}", file=sys.stderr)
+        return 2
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    facts = build_facts(path, args.keep, args.mask)
+    (out / "facts.json").write_text(json.dumps(facts, ensure_ascii=False, indent=1), encoding="utf-8")
+    (out / "digest.txt").write_text(digest(facts), encoding="utf-8")
+    _print_json({"session": str(path), "facts": str(out / "facts.json"), "digest": str(out / "digest.txt"),
+                 "title": facts["session"]["title"], "output_name": output_name(facts["session"]),
+                 "redactions": facts["redactions"], "warnings": facts["warnings"]})
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
