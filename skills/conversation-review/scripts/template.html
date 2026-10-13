@@ -218,6 +218,27 @@ pre.prompt { margin: 0; padding: 10px 12px; font-size: 13px; line-height: 1.55; 
 .legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 12px 0 0; font-size: 12px; color: var(--muted); }
 .legend .key.judgment { margin-left: 8px; }
 
+/* Defined terms, tooltip card and glossary */
+.term { text-decoration: underline dotted color-mix(in srgb, var(--muted) 65%, transparent); text-decoration-thickness: 1.5px; text-underline-offset: 3px; cursor: help; border-radius: 3px; }
+.term:hover, .term:focus-visible { text-decoration-color: var(--blue); }
+.term:focus-visible { outline-offset: 1px; }
+.help-link { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; font-weight: 500; font-size: 13.5px; }
+.help-link .icon { width: 15px; height: 15px; }
+.tip-card { position: fixed; z-index: 30; max-width: 300px; padding: 10px 12px; border-radius: 8px; background: var(--ink); color: var(--page); font-size: 13px; line-height: 1.45; box-shadow: 0 2px 4px rgba(15, 18, 34, .12), 0 12px 32px rgba(15, 18, 34, .22); pointer-events: none; opacity: 0; transform: translateY(4px); transition: opacity .14s cubic-bezier(.16, 1, .3, 1), transform .14s cubic-bezier(.16, 1, .3, 1); }
+.tip-card.on { opacity: 1; transform: none; }
+.tip-card strong { display: block; margin-bottom: 2px; font-weight: 600; }
+.tip-card .more-hint { display: block; margin-top: 6px; font-size: 12px; opacity: .65; }
+@media (prefers-reduced-motion: reduce) { .tip-card { transition: none; transform: none; } }
+.glossary { margin-top: 48px; }
+.glossary-intro { margin: 0 0 16px; color: var(--muted); max-width: 75ch; }
+.gloss-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 40px; }
+.gloss-group h3 { margin: 16px 0 6px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.gloss-group dl { margin: 0; }
+.gloss-group dl > div { padding: 8px 10px; margin: 0 -10px; border-radius: 6px; scroll-margin-top: 72px; }
+.gloss-group dt { font-weight: 600; color: var(--ink); }
+.gloss-group dd { margin: 2px 0 0; color: var(--text); font-size: 13.5px; }
+@media (max-width: 960px) { .gloss-grid { grid-template-columns: minmax(0, 1fr); } }
+
 /* Jump highlight */
 .flash { animation: flash 1.8s cubic-bezier(.16, 1, .3, 1); border-radius: 8px; }
 @keyframes flash { from { background-color: var(--blue-50); box-shadow: 0 0 0 6px var(--blue-50); } to { background-color: transparent; box-shadow: 0 0 0 6px transparent; } }
@@ -245,7 +266,8 @@ pre.prompt { margin: 0; padding: 10px 12px; font-size: 13px; line-height: 1.55; 
   .diff { max-width: 100%; order: 4; }
 }
 @media print {
-  .tabs, .sidebar, button.more, .copy, .raw-session { display: none; }
+  .tabs, .sidebar, button.more, .copy, .raw-session, .help-link, .tip-card { display: none; }
+  .term { text-decoration: none; }
   .layout { display: block; max-width: none; padding: 16px 0 0; }
   .masthead-inner { padding: 0 0 8px; }
   pre.clamp { max-height: none; -webkit-mask-image: none; mask-image: none; }
@@ -280,9 +302,11 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
   <symbol id="i-scan" viewBox="0 0 24 24"><path d="M4 8.5V6a2 2 0 0 1 2-2h2.5M15.5 4H18a2 2 0 0 1 2 2v2.5M20 15.5V18a2 2 0 0 1-2 2h-2.5M8.5 20H6a2 2 0 0 1-2-2v-2.5M8 12h8"/></symbol>
   <symbol id="i-fold" viewBox="0 0 24 24"><path d="M4 5.5h16M4 18.5h16M12 8.5v7M9 12.5l3 3 3-3"/></symbol>
   <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h8"/></symbol>
+  <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.4a2.5 2.5 0 0 1 4.8.9c0 1.7-2.4 2.2-2.4 3.7"/><path d="M12 17.2v.01"/></symbol>
   <symbol id="i-branch" viewBox="0 0 24 24"><circle cx="6.5" cy="5.5" r="2"/><circle cx="6.5" cy="18.5" r="2"/><circle cx="17.5" cy="7.5" r="2"/><path d="M6.5 7.5v9M17.5 9.5v.5a5 5 0 0 1-5 5H8.5"/></symbol>
 </svg>
 {{BODY}}
+<div class="tip-card" id="tip-card" role="tooltip"></div>
 <script>
 // Opens the collapsed parents of a target, scrolls to it and flashes it. Runs on every in-page link click,
 // so links work even where the URL fragment cannot change, and re-clicking the current #eN still works.
@@ -297,7 +321,7 @@ function reveal(id) {
   }
   target.scrollIntoView({ block: 'start' });
   const flash = target.classList.contains('phase') ? target.querySelector('.phase-head')
-    : (target.classList.contains('ev') ? target : null);
+    : (target.classList.contains('ev') || target.id.startsWith('term-') ? target : null);
   if (flash) {
     flash.classList.remove('flash');
     void flash.offsetWidth;
@@ -329,6 +353,50 @@ document.addEventListener('click', (event) => {
     }, () => {});
   }
 });
+// Tooltip: the definition is read from the glossary entry, so the page holds each definition once.
+const card = document.getElementById('tip-card');
+let shown = null;
+function showTip(term) {
+  const entry = document.getElementById('term-' + term.dataset.term);
+  if (!entry) return;
+  card.innerHTML = '';
+  const title = document.createElement('strong');
+  title.textContent = term.textContent.trim();
+  const text = document.createElement('span');
+  text.textContent = entry.querySelector('dd').textContent;
+  const hint = document.createElement('span');
+  hint.className = 'more-hint';
+  hint.textContent = 'Click for the glossary';
+  card.append(title, text, hint);
+  term.setAttribute('aria-describedby', 'tip-card');
+  const r = term.getBoundingClientRect();
+  card.classList.add('on');
+  const w = card.offsetWidth, h = card.offsetHeight;
+  const left = Math.min(Math.max(8, r.left + r.width / 2 - w / 2), innerWidth - w - 8);
+  const top = r.bottom + 8 + h > innerHeight ? r.top - h - 8 : r.bottom + 8;
+  card.style.left = left + 'px';
+  card.style.top = top + 'px';
+  shown = term;
+}
+function hideTip() {
+  if (shown) shown.removeAttribute('aria-describedby');
+  card.classList.remove('on');
+  shown = null;
+}
+document.addEventListener('pointerover', (e) => { const t = e.target.closest('.term'); if (t && t !== shown) showTip(t); });
+document.addEventListener('pointerout', (e) => { const t = e.target.closest('.term'); if (t && !t.contains(e.relatedTarget)) hideTip(); });
+document.addEventListener('focusin', (e) => { const t = e.target.closest('.term'); t ? showTip(t) : hideTip(); });
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') hideTip();
+  const t = e.target.closest && e.target.closest('.term');
+  if (t && e.key === 'Enter') { hideTip(); reveal('term-' + t.dataset.term); }
+});
+document.addEventListener('scroll', hideTip, { passive: true });
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('.term');
+  if (t && !e.target.closest('a')) { e.stopPropagation(); hideTip(); reveal('term-' + t.dataset.term); }
+}, true);
+
 const tabs = [...document.querySelectorAll('.tabs a')];
 const sections = tabs.map((t) => document.getElementById(t.dataset.tab)).filter(Boolean);
 function markTab() {

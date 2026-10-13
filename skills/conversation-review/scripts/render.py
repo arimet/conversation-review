@@ -310,6 +310,97 @@ def _markdown(text):
     return "".join(html)
 
 
+GLOSSARY = [
+    ("The three questions", [
+        ("intention", "Intent", "Did the developer state the problem clearly: the expected result, its limits, and when "
+                                "to stop?"),
+        ("evidence", "Evidence", "What did the developer rely on to accept the result: a test run, a build, a read of "
+                                 "the code, or nothing?"),
+        ("control", "Control", "Did the developer keep control of the scope, the context, the tools and the "
+                               "permissions the agent used?"),
+    ]),
+    ("The goal", [
+        ("correctness", "Correctly", "The result is right, and something in the session proves it."),
+        ("cost", "Cost", "Spend proportionate to the task, estimated from token usage and public API prices."),
+        ("autonomy", "Human dependency", "How often the developer had to step in, correct or unblock the agent. "
+                                         "Less is better."),
+        ("steps_context", "Steps & context", "How many steps the work took and how much context it filled. "
+                                             "Fewer and less is better."),
+    ]),
+    ("Conversation style", [
+        ("centaur", "Centaur", "The developer keeps the plan and hands the agent long, bounded tasks: the human "
+                               "decides, the agent executes."),
+        ("cyborg", "Cyborg", "Developer and agent work in short, interleaved steps, the developer steering every move."),
+        ("mixed", "Mixed", "The session switches between the centaur and the cyborg styles."),
+        ("strategy", "Strategy check", "How the technical approach was validated before code was written: a reviewed "
+                                       "plan, compared alternatives, a throwaway spike."),
+    ]),
+    ("Verdicts", [
+        ("green", "Met", "Nothing on this point changed the outcome."),
+        ("orange", "Partly met", "A problem the developer caught, or one with little effect on the result."),
+        ("red", "Not met", "A problem that shaped the result."),
+    ]),
+    ("Badges", [
+        ("detected", "Detected", "Computed by the script from the transcript: a fact, not an opinion."),
+        ("judgment", "Written by Claude", "A judgment Claude wrote while reviewing. Each one links to the moment it "
+                                          "is about."),
+        ("outside_scope", "Outside scope", "The agent read or wrote outside the repository: another folder, the home "
+                                           "directory, node_modules."),
+        ("destructive_command", "Destructive command", "A command that deletes data or rewrites history, such as "
+                                                       "rm -rf, git push --force or git reset --hard."),
+        ("permission", "Permission", "A tool call was refused, or tool calls ran without asking because auto mode "
+                                     "was on."),
+        ("cost_spike", "Cost spike", "One developer turn cost more than a quarter of the whole session."),
+        ("no_verification_since_edit", "No verification since edit", "Edits were accepted, committed or left at the "
+                                                                      "end with no test, build or re-read since."),
+        ("unclear_request", "Unclear request", "The request left out the expected result or its limits, or had to be "
+                                               "reframed."),
+        ("accepted_without_proof", "Accepted without proof", "A result was accepted with nothing showing it works."),
+        ("proof_present", "Proof present", "A test, a build or a manual check backed the acceptance."),
+        ("unrequested_action", "Unrequested action", "The agent edited, installed, committed or pushed when it was "
+                                                     "asked for a plan, a question or a strategy."),
+    ]),
+    ("Figures", [
+        ("verification_runs", "Test or build runs", "Commands that ran tests, a build or a linter. A commit whose "
+                                                    "message mentions tests does not count."),
+        ("accepted_unverified", "Accepted unverified", "Times edits were accepted with no check since the last change."),
+        ("changed", "Changed", "Lines added and removed, and the number of files touched."),
+        ("estimated_cost", "Estimated cost", "Token usage multiplied by public API prices. A + means some messages "
+                                             "used a model with no known price."),
+        ("tokens", "Tokens", "Every token sent to and returned by the model, cache reads included."),
+        ("developer_turns", "Developer turns", "Messages the developer typed. Compaction summaries and system "
+                                               "messages are not counted."),
+        ("denials", "Denied tool calls", "Tool calls the developer or a hook refused."),
+        ("unclear_requests", "Unclear requests", "Requests Claude marked as unclear."),
+        ("tool_calls", "Tool calls", "Every tool the agent used: shell commands, file reads and writes, searches, "
+                                     "subagents."),
+        ("peak_context", "Peak context", "The largest amount of context sent to the model in a single call."),
+        ("compactions", "Compactions", "Times Claude Code summarized the conversation to free context."),
+        ("event_id", "e12", "Every moment of the conversation has a number. Click one to jump to it, or copy the "
+                            "page link to cite it in a pull request comment."),
+    ]),
+]
+TERMS = {key: (label, text) for _, entries in GLOSSARY for key, label, text in entries}
+
+
+def _term(key, label=None):
+    """A defined word: dotted underline, definition on hover or focus, click jumps to the glossary."""
+    if key not in TERMS:
+        return esc(label or key)
+    return f'<span class="term" tabindex="0" data-term="{key}">{esc(label or TERMS[key][0])}</span>'
+
+
+def _glossary_html():
+    groups = "".join(
+        f'<div class="gloss-group"><h3>{esc(title)}</h3><dl>'
+        + "".join(f'<div id="term-{key}"><dt>{esc(label)}</dt><dd>{esc(text)}</dd></div>' for key, label, text in entries)
+        + "</dl></div>" for title, entries in GLOSSARY)
+    return (f'<section class="glossary" id="glossary"><h2 class="section-title">How to read this report</h2>'
+            f'<p class="glossary-intro">Hover any dotted word for its definition. Blue marks what the script detected '
+            f'in the transcript, purple what Claude wrote while reviewing.</p><div class="gloss-grid">{groups}</div>'
+            f'</section>')
+
+
 def _pretty_model(model):
     """claude-opus-5-5[1m] -> Claude Opus 5.5; anything else is shown as is."""
     m = re.match(r"claude-([a-z]+)-(\d+)(?:-(\d+))?", model or "")
@@ -351,9 +442,9 @@ def _badge(badge):
     positive = " positive" if badge["type"] == "proof_present" else ""
     icon = "check" if positive else ("sparkle" if judgment else "scan")
     return (f'<div class="badge {kind} axis-{esc(badge["axis"])}{positive}" data-axis="{esc(badge["axis"])}">'
-            f'<p class="badge-head">{_icon(icon)}<strong>{AXIS_LABELS[badge["axis"]]}</strong>'
-            f'<span>{esc(badge["type"].replace("_", " "))}</span>'
-            f'<span class="origin">{"Claude" if judgment else "Detected"}</span></p>'
+            f'<p class="badge-head">{_icon(icon)}<strong>{_term(badge["axis"], AXIS_LABELS[badge["axis"]])}</strong>'
+            f'<span>{_term(badge["type"], badge["type"].replace("_", " "))}</span>'
+            f'<span class="origin">{_term(kind, "Claude" if judgment else "Detected")}</span></p>'
             f'<p class="badge-note">{esc(badge.get("note", ""))}</p></div>')
 
 
@@ -442,19 +533,28 @@ def _masthead(facts, mode, annotations):
     tab_html = "".join(f'<a href="#{t}" data-tab="{t}">{label}'
                        + (f'<span class="counter">{n}</span>' if n is not None else "") + "</a>"
                        for t, label, n in tabs)
+    help_link = (f'<a class="help-link" href="#glossary">{_icon("help")}How to read this report</a>'
+                 if mode != "export" else "")
     return (f'<header class="masthead"><div class="masthead-inner"><h1>{esc(s["title"])}</h1>'
-            f'<p class="meta">{meta_html}</p></div></header>'
+            f'<p class="meta">{meta_html}{help_link}</p></div></header>'
             f'<nav class="tabs" aria-label="Sections"><div class="tabs-inner">{tab_html}</div></nav>')
 
 
 def _review_html(verdict):
     rows = "".join(
         f'<li class="check {esc(verdict[a]["level"])}">{_icon(LEVEL_ICONS[verdict[a]["level"]], "icon status")}'
-        f'<div><p class="check-title"><strong>{AXIS_LABELS[a]}</strong>'
-        f'<span class="level">{LEVEL_LABELS[verdict[a]["level"]]}</span>{_anchor(verdict[a]["event_id"])}</p>'
+        f'<div><p class="check-title"><strong>{_term(a, AXIS_LABELS[a])}</strong>'
+        f'<span class="level">{_term(verdict[a]["level"], LEVEL_LABELS[verdict[a]["level"]])}</span>'
+        f'{_anchor(verdict[a]["event_id"])}</p>'
         f'<p>{esc(verdict[a]["reason"])}</p></div></li>' for a in AXES)
     return (f'<section class="box review-box judgment-box"><header class="box-head">{_icon("sparkle")}'
             f'<strong>Claude reviewed this conversation</strong></header><ul class="verdict">{rows}</ul></section>')
+
+
+FIGURE_TERMS = {"Test or build runs": "verification_runs", "Accepted unverified": "accepted_unverified",
+                "Changed": "changed", "Estimated cost": "estimated_cost", "Tokens": "tokens",
+                "Developer turns": "developer_turns", "Denied tool calls": "denials", "Unclear requests": "unclear_requests",
+                "Tool calls": "tool_calls", "Peak context": "peak_context", "Compactions": "compactions"}
 
 
 def _goal_html(facts, badges, goal):
@@ -477,15 +577,17 @@ def _goal_html(facts, badges, goal):
             ("Compactions", m["compactions"])],
     }
     rows = []
-    for key in CRITERIA:
+    for key in CRITERIA:  # FIGURE_TERMS maps each figure label to its glossary entry
         entry = (goal or {}).get(key)
         level = f' {esc(entry["level"])}' if entry else ""
         icon = _icon(LEVEL_ICONS[entry["level"]], "icon status") if entry else _icon("dot", "icon status")
-        light = (f'<a class="goal-light" href="#{esc(entry["event_id"])}">{_icon("sparkle")}<span class="level">'
-                 f'{LEVEL_LABELS[entry["level"]]}</span> {esc(entry["reason"])}</a>' if entry else "")
-        figs = "".join(f"<div><dt>{esc(k)}</dt><dd>{esc(str(v))}</dd></div>" for k, v in figures[key])
+        light = (f'<p class="goal-light">{_icon("sparkle")}<span class="level">'
+                 f'{_term(entry["level"], LEVEL_LABELS[entry["level"]])}</span> {esc(entry["reason"])} '
+                 f'{_anchor(entry["event_id"])}</p>' if entry else "")
+        figs = "".join(f"<div><dt>{_term(FIGURE_TERMS.get(k, ''), k)}</dt><dd>{esc(str(v))}</dd></div>"
+                       for k, v in figures[key])
         rows.append(f'<li class="goal-card{level}">{icon}<div class="goal-main">'
-                    f'<p class="check-title"><strong>{esc(CRITERION_LABELS[key])}</strong></p>{light}</div>'
+                    f'<p class="check-title"><strong>{_term(key, CRITERION_LABELS[key])}</strong></p>{light}</div>'
                     f'<dl class="figures">{figs}</dl></li>')
     return (f'<section class="box goal-box"><header class="box-head"><strong>Goal</strong>'
             f'<span class="muted">{esc(GOAL_LINE)}</span></header><ul class="goal">{"".join(rows)}</ul></section>')
@@ -494,8 +596,9 @@ def _goal_html(facts, badges, goal):
 def _summary_html(summary):
     cards = [
         ("What is the task?", esc(summary["task"]) + " " + _anchor(summary["task_event"])),
-        ("Centaur or cyborg?", f'<strong>{esc(summary["style"].title())}.</strong> {esc(summary["style_reason"])}'),
-        ("How was the strategy checked?", esc(summary["strategy_check"]) + " " + _anchor(summary["strategy_event"])),
+        ("Centaur or cyborg?", f'<strong>{_term(summary["style"], summary["style"].title())}.</strong> '
+                               f'{esc(summary["style_reason"])}'),
+        (f'How was the {_term("strategy", "strategy")} checked?', esc(summary["strategy_check"]) + " " + _anchor(summary["strategy_event"])),
         ("What happened?", esc(summary["story"])),
     ]
     return (f'<section class="box summary judgment-box" id="summary"><header class="box-head">{_icon("sparkle")}'
@@ -516,11 +619,13 @@ def _sidebar(facts, phases, badges, mode):
             for b in sorted(badges, key=lambda b: order.get(b["event_id"], 0)))
         html += (f'<div class="side-block"><h2>Badges</h2><p class="hint">Click one to jump to the moment.</p>'
                  f'<ul class="side-list">{rows or "<li class=hint>No badges.</li>"}</ul>'
-                 f'<p class="legend"><span class="key detected"></span>Detected'
-                 f'<span class="key judgment"></span>Written by Claude</p></div>')
+                 f'<p class="legend"><span class="key detected"></span>{_term("detected", "Detected")}'
+                 f'<span class="key judgment"></span>{_term("judgment", "Written by Claude")}</p></div>')
     raw_link = ('<li><a href="#raw"><span>Raw session</span><span class="range">jsonl</span></a></li>'
                 if facts.get("raw") else "")
-    html += f'<div class="side-block"><h2>Phases</h2><ul class="side-list">{items}{raw_link}</ul></div>'
+    help_item = ('<li><a href="#glossary"><span>How to read this report</span><span class="range">?</span></a></li>'
+                 if mode != "export" else "")
+    html += f'<div class="side-block"><h2>Phases</h2><ul class="side-list">{items}{help_item}{raw_link}</ul></div>'
     return html + "</nav></aside>"
 
 
@@ -540,8 +645,10 @@ def _phases_html(events, phases, by_event):
 def _improvements_html(items):
     rows = "".join(
         f'<li class="tip"><p class="tip-head">{_anchor(i["event_id"])}'
-        f'<span class="tag axis-{i["axis"]}">{AXIS_LABELS[i["axis"]]}</span>'
-        f'<span class="tag criterion">{esc(CRITERION_LABELS[i["criterion"]])}</span></p>'
+        f'<span class="term" tabindex="0" data-term="{i["axis"]}"><span class="tag axis-{i["axis"]}">'
+        f'{AXIS_LABELS[i["axis"]]}</span></span>'
+        f'<span class="term" tabindex="0" data-term="{i["criterion"]}"><span class="tag criterion">'
+        f'{esc(CRITERION_LABELS[i["criterion"]])}</span></span></p>'
         f'<p class="problem">{esc(i["problem"])}</p>'
         f'<div class="suggested"><p class="suggested-head">Suggested prompt'
         f'<button class="copy" type="button">{_icon("copy")}Copy</button></p>'
@@ -592,6 +699,7 @@ def render_html(facts, annotations, mode):
             + f'<section id="overview" class="overview">{warnings}{overview}</section>'
             + f'<section id="conversation"><h2 class="section-title">Conversation</h2>'
             + f'{_phases_html(events, phases, by_event)}</section>'
+            + (_glossary_html() if mode != "export" else "")
             + _raw_html(facts.get("raw"))
             + (f'<p class="closing"><strong>{esc(CLOSING_LINE)}</strong> conversation-review is a skill made by '
                f'Anthony RIMET, inspired by Marek Kalnik\'s talk on conversation review (Dev With AI 2026).</p>'

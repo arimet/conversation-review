@@ -217,6 +217,28 @@ class RawSessionTest(unittest.TestCase):
         self.assertNotIn('id="raw"', render.render_html(sample_facts(), sample_annotations(), "review"))
 
 
+class GlossaryTest(unittest.TestCase):
+    def test_terms_have_tooltips_backed_by_the_glossary(self):
+        import re
+        html = render.render_html(sample_facts(), sample_annotations(), "review")
+        self.assertIn('<a class="help-link" href="#glossary">', html)
+        self.assertIn('id="glossary"', html)
+        self.assertIn('<span class="term" tabindex="0" data-term="centaur">Centaur</span>', html)
+        self.assertIn('data-term="control"', html)
+        self.assertIn('data-term="peak_context"', html)
+        used = set(re.findall(r'data-term="(\w+)"', html))
+        defined = set(re.findall(r'id="term-(\w+)"', html))
+        self.assertTrue(used)
+        self.assertEqual(used - defined, set())
+
+    def test_glossary_sits_after_the_conversation(self):
+        html = render.render_html(sample_facts(), sample_annotations("audit"), "audit")
+        self.assertGreater(html.index('id="glossary"'), html.index('id="conversation"'))
+
+    def test_export_has_no_glossary(self):
+        self.assertNotIn('id="glossary"', render.render_html(sample_facts(), None, "export"))
+
+
 class CliTest(TmpDirCase):
     def write(self, name, value):
         path = Path(self.tmp) / name
