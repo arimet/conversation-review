@@ -21,6 +21,12 @@ CAT_N_PREFIX = re.compile(r"^\s*\d+\t")
 ENV_FILE = re.compile(r"(^|/)\.env[^/]*$")
 ENV_IN_COMMAND = re.compile(r"(^|[\s/'\"=])\.env[\w.\-]*")  # cat .env.local, grep X ../.env
 MIN_ENV_VALUE = 8
+MAX_TOKEN = 256
+
+
+def encode_path(path):
+    """How Claude Code names a folder after a path: /Users/jane/app -> -Users-jane-app."""
+    return re.sub(r"[^A-Za-z0-9]", "-", path)
 
 
 def entropy(value):
@@ -42,19 +48,22 @@ class Redactor:
     def __init__(self, home="", keep=(), masks=()):
         home = home.rstrip("/")
         # Claude Code also writes the home path dash-encoded in its own folders: /Users/jane -> -Users-jane
-        encoded = re.sub(r"[^A-Za-z0-9]", "-", home)
+        encoded = encode_path(home)
         self.home = re.compile(re.escape(home) + r"(?![A-Za-z0-9_.\-])") if home else None
         self.encoded_home = re.compile(re.escape(encoded) + r"(?![A-Za-z0-9_.])") if home else None
         self.keep = set(keep)
         self.secrets = {}  # value -> {"id", "type", "event_ids"}, in order of first appearance
+        self._detected = 0
+        self._order = None  # replacement order, longest first; rebuilt when a secret is added
         for n, value in enumerate((m for m in masks if m), 1):
             self.secrets[value] = {"id": f"mask#{n}", "type": "custom", "event_ids": []}
 
     def _register(self, value, type_, event_id):
         entry = self.secrets.get(value)
         if entry is None:
-            n = sum(1 for e in self.secrets.values() if e["id"].startswith("secret#")) + 1
-            entry = self.secrets[value] = {"id": f"secret#{n}", "type": type_, "event_ids": []}
+            self._detected += 1
+            self._order = None
+            entry = self.secrets[value] = {"id": f"secret#{self._detected}", "type": type_, "event_ids": []}
         if event_id and event_id not in entry["event_ids"]:
             entry["event_ids"].append(event_id)
 
@@ -78,6 +87,8 @@ class Redactor:
                 self._register(match.group(0), type_, event_id)
         for match in HIGH_ENTROPY.finditer(text):
             value = match.group(0)
+            if len(value) > MAX_TOKEN:  # base64 images and minified blobs, not credentials
+                continue
             # A longer string containing a known one is registered too; apply() replaces longest first.
             if looks_random(value) and not any(value in known for known in self.secrets):
                 self._register(value, "high_entropy", event_id)
@@ -85,10 +96,13 @@ class Redactor:
     def apply(self, text):
         if not text:
             return text
-        for value in sorted(self.secrets, key=len, reverse=True):
-            entry = self.secrets[value]
-            if not self._kept(entry):
-                text = text.replace(value, f"[REDACTED:{entry['type']}#{entry['id'].split('#')[1]}]")
+        if self._order is None:
+            self._order = [(value, f"[REDACTED:{e['type']}#{e['id'].split('#')[1]}]")
+                           for value, e in sorted(self.secrets.items(), key=lambda item: -len(item[0]))
+                           if not self._kept(e)]
+        for value, placeholder in self._order:
+            if value in text:
+                text = text.replace(value, placeholder)
         if not self.home:
             return text
         return self.encoded_home.sub("-~", self.home.sub("~", text))

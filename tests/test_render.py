@@ -140,8 +140,10 @@ class HtmlTest(unittest.TestCase):
         html = self.html("review")
         self.assertIn('class="goal-card red"', html)
         self.assertIn('class="goal-light"', html)
-        self.assertIn('<span class="tag criterion">Steps &amp; context</span>', html)
-        self.assertIn('<span class="tag axis-evidence">Evidence</span>', html)
+        self.assertIn('<span class="tag criterion"><span class="term" tabindex="0" data-term="steps_context">'
+                      'Steps &amp; context</span></span>', html)
+        self.assertIn('<span class="tag"><span class="term" tabindex="0" data-term="evidence">Evidence</span></span>',
+                      html)
 
     def test_text_is_escaped_and_rendered_once(self):
         facts = sample_facts()
@@ -153,9 +155,6 @@ class HtmlTest(unittest.TestCase):
 
     def test_consecutive_calls_to_the_same_tool_are_grouped(self):
         self.assertIn("Read ×2", self.html())
-
-    def test_badged_events_get_filter_classes(self):
-        self.assertRegex(self.html(), r'<details id="e6" class="[^"]*has-control')
 
 
 class MarkdownMessageTest(unittest.TestCase):

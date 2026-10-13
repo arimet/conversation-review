@@ -8,13 +8,13 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from collections import Counter, defaultdict
+from collections import defaultdict
 from html import escape as esc
 from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from extract import _map_strings, _strings, walk  # noqa: E402
+from extract import OUTPUT_PREVIEW_LINES as PREVIEW_LINES, _first_line, _map_strings, _strings, walk  # noqa: E402
 from redact import Redactor  # noqa: E402
 
 AXES = ("intention", "evidence", "control")
@@ -28,7 +28,6 @@ MODES = ("export", "audit", "review")
 CRITERIA = ("correctness", "cost", "autonomy", "steps_context")
 STYLES = ("centaur", "cyborg", "mixed")
 SUMMARY_FIELDS = ("task", "task_event", "style", "style_reason", "strategy_check", "strategy_event", "story")
-PREVIEW_LINES = 20
 
 
 def _validate_phases(phases, top, errors):
@@ -153,27 +152,25 @@ def _time(event):
     return event.get("timestamp", "")[11:16]
 
 
-LEADING_CD = re.compile(r"^cd\s+\S+\s*(?:&&|;)\s*")
-
-
-def _first_line(text):
-    """First line of a call, without a leading `cd <dir> &&` that hides the actual command."""
-    line = (text or "").strip().splitlines()[0] if (text or "").strip() else ""
-    return LEADING_CD.sub("", line)
-
-
 def _code(text):
     if not text:
         return ""
     return f"`` {text} ``" if "`" in text else f"`{text}`"
 
 
+def _cost(m, verbose=False):
+    """$2.29, with + (or the count, verbose) when some messages used a model with no known price."""
+    unpriced = m.get("unpriced_messages")
+    note = (f" (+{unpriced} unpriced messages)" if verbose else "+") if unpriced else ""
+    return f"${m['cost_usd_estimate']:.2f}{note}"
+
+
+def _tokens_in(m):
+    return m["input_tokens"] + m["cache_read_tokens"] + m["cache_write_tokens"]
+
+
 def _metrics_line(m):
-    cost = f"${m['cost_usd_estimate']:.2f}"
-    if m.get("unpriced_messages"):
-        cost += f" (+{m['unpriced_messages']} unpriced messages)"
-    tokens_in = m["input_tokens"] + m["cache_read_tokens"] + m["cache_write_tokens"]
-    return (f"Cost (estimate): {cost} · Tokens: {tokens_in:,} in / {m['output_tokens']:,} out · "
+    return (f"Cost (estimate): {_cost(m, verbose=True)} · Tokens: {_tokens_in(m):,} in / {m['output_tokens']:,} out · "
             f"Tool calls: {m['tool_calls']} · Files written: {m['files_written']} "
             f"(+{m['lines_added']} / -{m['lines_removed']})")
 
@@ -221,13 +218,9 @@ def render_markdown(facts):
 
 
 TEMPLATE = (Path(__file__).resolve().parent / "template.html").read_text(encoding="utf-8")
-AXIS_LABELS = {"intention": "Intent", "evidence": "Evidence", "control": "Control"}
-CRITERION_LABELS = {"correctness": "Correctly", "cost": "Cost", "autonomy": "Human dependency",
-                    "steps_context": "Steps & context"}
 GOAL_LINE = ("The largest sensible task, done correctly, at the lowest cost, with minimal human dependency, "
              "in few steps and with as little context as possible.")
 CLOSING_LINE = "The conversation is the most important artifact."
-LEVEL_LABELS = {"green": "Met", "orange": "Partly met", "red": "Not met"}
 LEVEL_ICONS = {"green": "check", "orange": "alert", "red": "x"}
 TOOL_ICONS = {"Bash": "terminal", "Read": "file", "Write": "file-plus", "Edit": "pencil", "MultiEdit": "pencil",
               "NotebookEdit": "pencil", "Grep": "search", "Glob": "search", "WebFetch": "globe",
@@ -381,6 +374,9 @@ GLOSSARY = [
     ]),
 ]
 TERMS = {key: (label, text) for _, entries in GLOSSARY for key, label, text in entries}
+AXIS_LABELS = {key: TERMS[key][0] for key in AXES}
+CRITERION_LABELS = {key: TERMS[key][0] for key in CRITERIA}
+LEVEL_LABELS = {key: TERMS[key][0] for key in LEVELS}
 
 
 def _term(key, label=None):
@@ -432,16 +428,12 @@ def _axes(event, by_event):
     return axes
 
 
-def _axis_classes(axes):
-    return " ".join(f"has-{a}" for a in sorted(axes))
-
-
 def _badge(badge):
     judgment = bool(badge.get("judgment"))
     kind = "judgment" if judgment else "detected"
     positive = " positive" if badge["type"] == "proof_present" else ""
     icon = "check" if positive else ("sparkle" if judgment else "scan")
-    return (f'<div class="badge {kind} axis-{esc(badge["axis"])}{positive}" data-axis="{esc(badge["axis"])}">'
+    return (f'<div class="badge {kind}{positive}">'
             f'<p class="badge-head">{_icon(icon)}<strong>{_term(badge["axis"], AXIS_LABELS[badge["axis"]])}</strong>'
             f'<span>{_term(badge["type"], badge["type"].replace("_", " "))}</span>'
             f'<span class="origin">{_term(kind, "Claude" if judgment else "Detected")}</span></p>'
@@ -464,8 +456,7 @@ def _message_html(event, by_event, depth, classes, badges):
 
 
 def _event_html(event, by_event, depth):
-    axes = _axes(event, by_event)
-    classes = f'ev {event["kind"].replace("_", "-")} {_axis_classes(axes)}'.strip()
+    classes = f'ev {event["kind"].replace("_", "-")}'
     badges = "".join(_badge(b) for b in by_event.get(event["id"], []))
     if event["kind"] in ("user_message", "assistant_message", "system"):
         return _message_html(event, by_event, depth, classes, badges)
@@ -501,9 +492,9 @@ def _events_html(events, by_event, depth=0):
         if j > i:
             run = events[i:j + 1]
             axes = set().union(*(_axes(e, by_event) for e in run))
-            flags = "".join(f'<span class="flag axis-{a}">{AXIS_LABELS[a]}</span>' for a in sorted(axes))
+            flags = "".join(f'<span class="flag">{AXIS_LABELS[a]}</span>' for a in sorted(axes))
             is_open = " open" if axes else ""
-            parts.append(f'<details class="ev group {_axis_classes(axes)}"{is_open}><summary class="event-row">'
+            parts.append(f'<details class="ev group"{is_open}><summary class="event-row">'
                          f'{_icon(TOOL_ICONS.get(event["tool"], "tool"), "icon rail-icon")}'
                          f'<span class="tool">{esc(event["tool"])} ×{len(run)}</span>'
                          f'<span class="range">{run[0]["id"]}–{run[-1]["id"]}</span>{flags}</summary>'
@@ -518,18 +509,15 @@ def _events_html(events, by_event, depth=0):
 def _masthead(facts, mode, annotations):
     s, m = facts["session"], facts["metrics"]
     count = sum(1 for _ in walk(facts["events"]))
-    cost = f"${m['cost_usd_estimate']:.2f}" + ("+" if m.get("unpriced_messages") else "")
-    meta = [f'<span class="path">{esc(s["cwd"])}</span>' if s["cwd"] else ""]
+    meta = [f'<span class="path">{esc(s["cwd"])}</span>'] if s["cwd"] else []
     if s["branch"] and s["branch"] != "HEAD":
         meta.append(f'<span class="branch">{_icon("branch")}{esc(s["branch"])}</span>')
-    meta += [esc(x) for x in (_pretty_model(s["model"]), _pretty_date(s["started_at"]), f"{count} events", cost) if x]
-    meta_html = "".join(f"<span>{x}</span>" if not x.startswith("<span") else x for x in meta if x)
-    tabs = [("overview", "Overview", None)]
-    if mode == "review":
-        tabs.append(("improvements", "Tips", len(annotations.get("improvements", []))))
-    tabs.append(("conversation", "Conversation", count))
-    if mode == "export":
-        tabs = [("conversation", "Conversation", count)]
+    meta += [f"<span>{esc(x)}</span>" for x in (_pretty_model(s["model"]), _pretty_date(s["started_at"]),
+                                                 f"{count} events", _cost(m)) if x]
+    meta_html = "".join(meta)
+    tips = [("improvements", "Tips", len(annotations.get("improvements", [])))] if mode == "review" else []
+    tabs = ([("conversation", "Conversation", count)] if mode == "export"
+            else [("overview", "Overview", None)] + tips + [("conversation", "Conversation", count)])
     tab_html = "".join(f'<a href="#{t}" data-tab="{t}">{label}'
                        + (f'<span class="counter">{n}</span>' if n is not None else "") + "</a>"
                        for t, label, n in tabs)
@@ -551,41 +539,32 @@ def _review_html(verdict):
             f'<strong>Claude reviewed this conversation</strong></header><ul class="verdict">{rows}</ul></section>')
 
 
-FIGURE_TERMS = {"Test or build runs": "verification_runs", "Accepted unverified": "accepted_unverified",
-                "Changed": "changed", "Estimated cost": "estimated_cost", "Tokens": "tokens",
-                "Developer turns": "developer_turns", "Denied tool calls": "denials", "Unclear requests": "unclear_requests",
-                "Tool calls": "tool_calls", "Peak context": "peak_context", "Compactions": "compactions"}
-
-
 def _goal_html(facts, badges, goal):
     m = facts["metrics"]
-    tokens = m["input_tokens"] + m["cache_read_tokens"] + m["cache_write_tokens"] + m["output_tokens"]
-    cost = f"${m['cost_usd_estimate']:.2f}" + ("+" if m.get("unpriced_messages") else "")
-    figures = {
+    figures = {  # (glossary key, value): the key gives both the label and the tooltip
         "correctness": [
-            ("Test or build runs", m["verification_runs"]),
-            ("Accepted unverified", sum(1 for b in badges if b["type"] == "no_verification_since_edit")),
-            ("Changed", f"+{m['lines_added']} / −{m['lines_removed']} in {m['files_written']} files")],
-        "cost": [("Estimated cost", cost), ("Tokens", f"{tokens:,}")],
+            ("verification_runs", m["verification_runs"]),
+            ("accepted_unverified", sum(1 for b in badges if b["type"] == "no_verification_since_edit")),
+            ("changed", f"+{m['lines_added']} / −{m['lines_removed']} in {m['files_written']} files")],
+        "cost": [("estimated_cost", _cost(m)), ("tokens", f"{_tokens_in(m) + m['output_tokens']:,}")],
         "autonomy": [
-            ("Developer turns", m["developer_turns"]),
-            ("Denied tool calls", m["denials"]),
-            ("Unclear requests", sum(1 for b in badges if b["type"] == "unclear_request"))],
+            ("developer_turns", m["developer_turns"]),
+            ("denials", m["denials"]),
+            ("unclear_requests", sum(1 for b in badges if b["type"] == "unclear_request"))],
         "steps_context": [
-            ("Tool calls", m["tool_calls"]),
-            ("Peak context", f"{m['peak_context_tokens']:,} tokens"),
-            ("Compactions", m["compactions"])],
+            ("tool_calls", m["tool_calls"]),
+            ("peak_context", f"{m['peak_context_tokens']:,} tokens"),
+            ("compactions", m["compactions"])],
     }
     rows = []
-    for key in CRITERIA:  # FIGURE_TERMS maps each figure label to its glossary entry
+    for key in CRITERIA:
         entry = (goal or {}).get(key)
         level = f' {esc(entry["level"])}' if entry else ""
         icon = _icon(LEVEL_ICONS[entry["level"]], "icon status") if entry else _icon("dot", "icon status")
         light = (f'<p class="goal-light">{_icon("sparkle")}<span class="level">'
                  f'{_term(entry["level"], LEVEL_LABELS[entry["level"]])}</span> {esc(entry["reason"])} '
                  f'{_anchor(entry["event_id"])}</p>' if entry else "")
-        figs = "".join(f"<div><dt>{_term(FIGURE_TERMS.get(k, ''), k)}</dt><dd>{esc(str(v))}</dd></div>"
-                       for k, v in figures[key])
+        figs = "".join(f"<div><dt>{_term(k)}</dt><dd>{esc(str(v))}</dd></div>" for k, v in figures[key])
         rows.append(f'<li class="goal-card{level}">{icon}<div class="goal-main">'
                     f'<p class="check-title"><strong>{_term(key, CRITERION_LABELS[key])}</strong></p>{light}</div>'
                     f'<dl class="figures">{figs}</dl></li>')
@@ -645,10 +624,7 @@ def _phases_html(events, phases, by_event):
 def _improvements_html(items):
     rows = "".join(
         f'<li class="tip"><p class="tip-head">{_anchor(i["event_id"])}'
-        f'<span class="term" tabindex="0" data-term="{i["axis"]}"><span class="tag axis-{i["axis"]}">'
-        f'{AXIS_LABELS[i["axis"]]}</span></span>'
-        f'<span class="term" tabindex="0" data-term="{i["criterion"]}"><span class="tag criterion">'
-        f'{esc(CRITERION_LABELS[i["criterion"]])}</span></span></p>'
+        f'<span class="tag">{_term(i["axis"])}</span><span class="tag criterion">{_term(i["criterion"])}</span></p>'
         f'<p class="problem">{esc(i["problem"])}</p>'
         f'<div class="suggested"><p class="suggested-head">Suggested prompt'
         f'<button class="copy" type="button">{_icon("copy")}Copy</button></p>'
@@ -777,12 +753,12 @@ def main(argv=None):
             parser.error("--annotations is required for audit and review")
         annotations = _load(args.annotations)
         errors = validate(facts, annotations, args.mode)
-        annotations = redact_annotations(annotations) if not errors else annotations
         if errors:
             print("Invalid annotations:\n" + "\n".join(f"- {e}" for e in errors), file=sys.stderr)
             return 1
+        annotations = redact_annotations(annotations)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    html = render_html(facts, annotations, args.mode)
+    html = render_html(facts, annotations, args.mode) if args.mode != "export" or args.pdf else ""
     if args.mode == "export":
         target, content = Path(args.out + ".md"), render_markdown(facts)
     else:

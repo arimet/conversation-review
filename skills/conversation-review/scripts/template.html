@@ -31,7 +31,7 @@ body { margin: 0; background: var(--page); color: var(--text); font: 14px/1.5 va
 a { color: var(--blue); text-decoration: none; text-underline-offset: 2px; }
 a:hover { text-decoration: underline; }
 :focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; border-radius: 4px; }
-code, pre, .mono { font-family: var(--mono); font-size: 12.5px; }
+code, pre { font-family: var(--mono); font-size: 12.5px; }
 dd, .counter, .range, .anchor { font-variant-numeric: tabular-nums; }
 .icon { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
 .muted { color: var(--muted); }
@@ -76,7 +76,6 @@ dd, .counter, .range, .anchor { font-variant-numeric: tabular-nums; }
 .check-title .anchor { margin-left: auto; }
 .level { font-size: 12px; font-weight: 600; }
 .goal-light { display: block; color: var(--text); font-size: 13.5px; }
-.goal-light:hover { text-decoration: none; color: var(--ink); }
 .goal-light .level { margin-right: 4px; }
 .goal-light .icon { width: 13px; height: 13px; margin-right: 4px; vertical-align: -2px; color: var(--purple); }
 .figures { margin: 0; font-size: 13px; }
@@ -337,6 +336,12 @@ document.addEventListener('click', (event) => {
     reveal(id);
     return;
   }
+  const term = event.target.closest('.term');
+  if (term) {
+    hideTip();
+    reveal('term-' + term.dataset.term);
+    return;
+  }
   const more = event.target.closest('button.more');
   if (more) {
     const pre = more.previousElementSibling;
@@ -392,18 +397,17 @@ document.addEventListener('keydown', (e) => {
   if (t && e.key === 'Enter') { hideTip(); reveal('term-' + t.dataset.term); }
 });
 document.addEventListener('scroll', hideTip, { passive: true });
-document.addEventListener('click', (e) => {
-  const t = e.target.closest('.term');
-  if (t && !e.target.closest('a')) { e.stopPropagation(); hideTip(); reveal('term-' + t.dataset.term); }
-}, true);
 
 const tabs = [...document.querySelectorAll('.tabs a')];
 const sections = tabs.map((t) => document.getElementById(t.dataset.tab)).filter(Boolean);
+let currentTab = null;
 function markTab() {
   let current = sections[0];
   for (const section of sections) {
     if (section.getBoundingClientRect().top < 120) current = section;
   }
+  if (current === currentTab) return;
+  currentTab = current;
   tabs.forEach((t) => t.setAttribute('aria-current', String(current && t.dataset.tab === current.id)));
 }
 document.addEventListener('scroll', markTab, { passive: true });

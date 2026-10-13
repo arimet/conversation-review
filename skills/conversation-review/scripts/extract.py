@@ -11,7 +11,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from redact import ENV_FILE, ENV_IN_COMMAND, Redactor  # noqa: E402
+from redact import ENV_FILE, ENV_IN_COMMAND, Redactor, encode_path  # noqa: E402
 
 OUTPUT_PREVIEW_LINES = 20
 AGENT_TOOLS = ("Agent", "Task")
@@ -43,9 +43,13 @@ def walk(events):
         yield from walk(event.get("children") or [])
 
 
+def _inside(path, root):
+    return path == root or path.startswith(root + "/")
+
+
 def _relative(path, cwd):
     root = (cwd or "").rstrip("/")
-    if path and root and (path == root or path.startswith(root + "/")):
+    if path and root and _inside(path, root):
         return os.path.relpath(path, root)
     return path
 
@@ -80,6 +84,15 @@ def _result_text(content):
         elif isinstance(block, dict):
             parts.append(f"[{block.get('type', 'content')}]")
     return "\n".join(parts)
+
+
+LEADING_CD = re.compile(r"^cd\s+\S+\s*(?:&&|;)\s*")
+
+
+def _first_line(text):
+    """First line of a call, without a leading `cd <dir> &&` that hides the actual command."""
+    line = (text or "").strip().splitlines()[0] if (text or "").strip() else ""
+    return LEADING_CD.sub("", line)
 
 
 def _tool_summary(name, tool_input, cwd):
@@ -201,7 +214,7 @@ def attach_subagents(session_path, events, cwd, usage, warnings):
         pending = [p for p in pending if p not in attached]
 
 
-def _title(rows, limit=80):
+def _title(rows):
     titles = [r["customTitle"] for r in rows if r.get("type") == "custom-title" and r.get("customTitle")]
     if titles:
         return titles[-1]
@@ -209,7 +222,7 @@ def _title(rows, limit=80):
         if row.get("type") == "user" and not row.get("isMeta") and not row.get("isCompactSummary"):
             text = _user_text((row.get("message") or {}).get("content"))
             if text:
-                return text.splitlines()[0][:limit] if limit else text.splitlines()[0]
+                return text.splitlines()[0]
     return ""
 
 
@@ -222,7 +235,7 @@ def session_info(path, rows):
     stamped = [r["timestamp"] for r in rows if r.get("timestamp")]
     return {
         "id": Path(path).stem,
-        "title": _title(rows, limit=None) or Path(path).stem,  # truncated after redaction, in build_facts
+        "title": _title(rows) or Path(path).stem,  # clipped after redaction, in build_facts
         "model": models.most_common(1)[0][0] if models else "",
         "branch": next((r["gitBranch"] for r in rows if r.get("gitBranch")), ""),
         "cwd": next((r["cwd"] for r in rows if r.get("cwd")), ""),
@@ -369,8 +382,7 @@ def _is_outside(path, cwd):
     if expanded.startswith(SAFE_PREFIXES) or expanded == "/dev/null" or HARNESS_DIR in expanded:
         return False
     root = cwd.rstrip("/")
-    full = os.path.normpath(os.path.join(root, expanded))
-    return not (full == root or full.startswith(root + "/"))
+    return not _inside(os.path.normpath(os.path.join(root, expanded)), root)
 
 
 def _outside_paths(event, cwd):
@@ -385,22 +397,27 @@ def _outside_paths(event, cwd):
     return list(dict.fromkeys(p for p in candidates if _is_outside(p, cwd)))
 
 
-def _edits(event):
-    return any(f["added"] or f["removed"] for e in walk([event]) for f in e.get("files", []))
+def _changed_files(event):
+    """Files changed by a tool call, including those of a subagent's own calls."""
+    return [f for e in walk([event]) for f in e.get("files", []) if f["added"] or f["removed"]]
+
+
+def _read_path(event):
+    return (event.get("_input") or {}).get("file_path", "") if event.get("tool") == "Read" else ""
 
 
 def verification_badges(events, cwd):
     """Main thread only: an acceptance after an edit needs a test, a build or a read of an edited file."""
     badges, dirty = [], set()
     for event in events:
-        if event["kind"] in ("tool_call", "subagent") and _edits(event):
-            dirty |= {f["path"] for e in walk([event]) for f in e.get("files", [])}
+        changed = _changed_files(event) if event["kind"] in ("tool_call", "subagent") else []
+        if changed:
+            dirty |= {f["path"] for f in changed}
             continue
         if not dirty:
             continue
         command = _command(event)
-        read_path = (event.get("_input") or {}).get("file_path", "") if event.get("tool") == "Read" else ""
-        if _is_verification(event) or _relative(read_path, cwd) in dirty:
+        if _is_verification(event) or _relative(_read_path(event), cwd) in dirty:
             dirty = set()
         elif (event["kind"] == "user_message" and ACCEPT.match(event["text"])) or SHIP.search(command):
             badges.append({"event_id": event["id"], "axis": "evidence", "type": "no_verification_since_edit",
@@ -445,6 +462,7 @@ def factual_badges(events, cwd, total_cost):
 PROJECTS_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))) / "projects"
 TEXT_FIELDS = ("text", "input_summary", "output")
 TITLE_MAX = 80
+DIGEST_TEXT = 300
 NOTE_MAX = 200
 RAW_MAX_BYTES = 5_000_000  # ponytail: raw session capped so a 100 MB transcript does not become a 100 MB report
 
@@ -484,21 +502,24 @@ def _raw_files(path, raw_max_bytes):
     sources = [(path.name, path)] + [(f"subagents/{p.name}", p) for p in sorted(sub_dir.glob("agent-*.jsonl"))]
     files, total = [], 0
     for label, source in sources:
-        rows, kept, truncated = load_jsonl(source)[0], [], False
-        for row in rows:
-            size = len(json.dumps(row, ensure_ascii=False).encode("utf-8"))
-            if total + size > raw_max_bytes:
-                truncated = True
-                break
-            kept.append(row)
-            total += size
+        kept, truncated = [], False
+        with open(source, encoding="utf-8") as f:
+            for line in f:
+                size = len(line.encode("utf-8"))
+                if total + size > raw_max_bytes:
+                    truncated = True
+                    break
+                try:
+                    kept.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+                total += size
         files.append({"file": label, "rows": kept, "truncated": truncated})
     return files
 
 
 def _clip(text, limit):
     return text if len(text) <= limit else text[: limit - 1] + "…"
-DIGEST_TEXT = 300
 
 
 class SessionNotFound(Exception):
@@ -513,8 +534,7 @@ def build_facts(path, keep=(), masks=(), home=None, raw_max_bytes=RAW_MAX_BYTES)
     for value in session.values():
         redactor.scan(value if isinstance(value, str) else "")
     for event in walk(events):
-        reads_env = (event.get("tool") == "Read" and ENV_FILE.search((event.get("_input") or {}).get("file_path", ""))
-                     or ENV_IN_COMMAND.search(_command(event)))
+        reads_env = ENV_FILE.search(_read_path(event)) or ENV_IN_COMMAND.search(_command(event))
         if reads_env:
             redactor.learn_env_file(event.get("output", ""), event["id"])
         for key in TEXT_FIELDS:
@@ -562,11 +582,10 @@ def _digest_line(event):
         body = event["text"]
     else:
         who = "SUBAGENT" if event["kind"] == "subagent" else "TOOL"
-        body = f"{event['tool']}: {event['input_summary']}"
+        body = f"{event['tool']}: {LEADING_CD.sub('', event['input_summary'].strip())}"
         body += "".join(f" [{f['path']} +{f['added']}/-{f['removed']}]" for f in event.get("files", []))
         body += " -> ERROR" if event.get("error") else ""
-    body = " ".join(body.split())
-    return f"{who} {body[:DIGEST_TEXT]}{'…' if len(body) > DIGEST_TEXT else ''}"
+    return f"{who} {_clip(' '.join(body.split()), DIGEST_TEXT)}"
 
 
 def digest(facts):
@@ -578,7 +597,7 @@ def digest(facts):
         "",
         "Factual badges:",
     ]
-    lines += [f"  {b['event_id']} {b['axis']}/{b['type']}: {' '.join(b['note'].split())[:DIGEST_TEXT]}"
+    lines += [f"  {b['event_id']} {b['axis']}/{b['type']}: {_clip(' '.join(b['note'].split()), DIGEST_TEXT)}"
               for b in facts["factual_badges"]] or ["  (none)"]
     lines += ["", "Events (open one in full with: extract.py show --facts <facts.json> <id>):"]
 
@@ -598,19 +617,36 @@ def output_name(session):
 
 
 def project_dir(cwd, projects_dir=None):
-    return Path(projects_dir or PROJECTS_DIR) / re.sub(r"[^A-Za-z0-9]", "-", cwd)
+    return Path(projects_dir or PROJECTS_DIR) / encode_path(cwd)
 
 
-def list_sessions(cwd, projects_dir=None):
-    directory = project_dir(cwd, projects_dir)
-    paths = sorted(directory.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+def _session_paths(cwd, projects_dir=None):
+    return sorted(project_dir(cwd, projects_dir).glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def _quick_title(path):
+    """Title without parsing the whole transcript: custom-title rows, else the first developer message."""
+    title, first = "", ""
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            if '"custom-title"' in line or (not first and '"user"' in line):
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                title = row.get("customTitle") or title if row.get("type") == "custom-title" else title
+                first = first or _title([row])
+    return title or first
+
+
+def list_sessions(cwd, projects_dir=None, limit=None):
     sessions = []
-    for path in paths:
+    for path in _session_paths(cwd, projects_dir)[:limit]:
         stat = path.stat()
         sessions.append({
             "id": path.stem,
             "path": str(path),
-            "title": _title(load_jsonl(path)[0]) or path.stem,
+            "title": _clip(_quick_title(path), TITLE_MAX) or path.stem,
             "modified": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M"),
             "size_kb": stat.st_size // 1024,
         })
@@ -620,11 +656,10 @@ def list_sessions(cwd, projects_dir=None):
 def find_session(cwd, session=None, projects_dir=None):
     if session and session.endswith(".jsonl") and Path(session).exists():
         return Path(session)
-    sessions = list_sessions(cwd, projects_dir)
-    matches = [s for s in sessions if not session or s["id"].startswith(session)]
+    matches = [p for p in _session_paths(cwd, projects_dir) if not session or p.stem.startswith(session)]
     if not matches:
         raise SessionNotFound(f"No session {session or ''} found in {project_dir(cwd, projects_dir)}".strip())
-    return Path(matches[0]["path"])
+    return matches[0]
 
 
 def _print_json(value):
@@ -649,7 +684,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     if args.command == "list":
-        _print_json(list_sessions(args.cwd)[: args.limit])
+        _print_json(list_sessions(args.cwd, limit=args.limit))
         return 0
     if args.command == "show":
         facts = json.loads(Path(args.facts).read_text(encoding="utf-8"))
@@ -663,13 +698,13 @@ def main(argv=None):
         path = find_session(args.cwd, args.session)
     except SessionNotFound as error:
         print(error, file=sys.stderr)
-        for s in list_sessions(args.cwd)[:10]:
+        for s in list_sessions(args.cwd, limit=10):
             print(f"  {s['id']}  {s['modified']}  {s['title']}", file=sys.stderr)
         return 2
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     facts = build_facts(path, args.keep, args.mask)
-    (out / "facts.json").write_text(json.dumps(facts, ensure_ascii=False, indent=1), encoding="utf-8")
+    (out / "facts.json").write_text(json.dumps(facts, ensure_ascii=False), encoding="utf-8")
     (out / "digest.txt").write_text(digest(facts), encoding="utf-8")
     _print_json({"session": str(path), "facts": str(out / "facts.json"), "digest": str(out / "digest.txt"),
                  "title": facts["session"]["title"], "output_name": output_name(facts["session"]),
