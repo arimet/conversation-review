@@ -80,5 +80,63 @@ class ParseTest(TmpDirCase):
         self.assertIn("skipped unreadable line", warnings[0])
 
 
+class MetricsTest(TmpDirCase):
+    def metrics(self, builder):
+        _, events, usage, _ = extract.parse_session(builder.write(self.tmp))
+        return extract.compute_metrics(events, usage), events
+
+    def test_split_assistant_messages_are_counted_once(self):
+        m, _ = self.metrics(marek_session())
+        self.assertEqual(m["output_tokens"], 700)
+        self.assertAlmostEqual(m["cost_usd_estimate"], 0.0157, places=4)
+        self.assertEqual(m["tool_calls"], 5)
+        self.assertEqual(m["files_written"], 2)
+        self.assertEqual((m["lines_added"], m["lines_removed"]), (5, 1))
+
+    def test_cache_writes_and_model_suffixes_are_priced(self):
+        b = SessionBuilder(model="claude-opus-5-5[1m]")
+        b.user("hi")
+        b.say("hello", usage={"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0,
+                              "cache_creation_input_tokens": 1_000_000,
+                              "cache_creation": {"ephemeral_5m_input_tokens": 0,
+                                                 "ephemeral_1h_input_tokens": 1_000_000}})
+        m, _ = self.metrics(b)
+        self.assertEqual(m["cost_usd_estimate"], 8.0)
+        self.assertEqual(m["cache_write_tokens"], 1_000_000)
+
+    def test_unknown_models_are_counted_but_not_priced(self):
+        b = SessionBuilder(model="claude-unknown-9")
+        b.user("hi")
+        b.say("hello")
+        m, _ = self.metrics(b)
+        self.assertEqual((m["cost_usd_estimate"], m["unpriced_messages"], m["output_tokens"]), (0.0, 1, 100))
+
+    def test_cost_is_attributed_to_the_developer_turn(self):
+        _, events = self.metrics(marek_session())
+        first, second = [e for e in events if e["kind"] == "user_message"]
+        self.assertAlmostEqual(first["turn_cost"], 6 * 0.00224)
+        self.assertAlmostEqual(second["turn_cost"], 0.00224)
+
+    def test_subagent_usage_counts_toward_the_parent_turn(self):
+        m, events = self.metrics(subagent_session())
+        self.assertAlmostEqual(events[0]["turn_cost"], m["cost_usd_estimate"], places=4)
+        self.assertNotIn("turn_cost", events[1]["children"][0])
+
+    def test_goal_figures(self):
+        m, _ = self.metrics(marek_session())
+        self.assertEqual((m["developer_turns"], m["verification_runs"], m["denials"], m["compactions"],
+                          m["peak_context_tokens"]), (2, 0, 0, 0, 1010))
+        b = SessionBuilder()
+        b.user("fix it")
+        b.tool("Bash", {"command": "npm test"})
+        b.tool("Bash", {"command": "git commit -am 'fix tests'"})
+        b.tool("Write", {"file_path": f"{CWD}/a"}, output="The user doesn't want to proceed with this tool use.",
+               is_error=True)
+        b.raw({"type": "system", "subtype": "compact_boundary", "timestamp": "2026-10-13T11:00:00.000Z"})
+        b.user("go on")
+        m, _ = self.metrics(b)
+        self.assertEqual((m["developer_turns"], m["verification_runs"], m["denials"], m["compactions"]), (2, 1, 1, 1))
+
+
 if __name__ == "__main__":
     unittest.main()

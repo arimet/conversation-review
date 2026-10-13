@@ -237,3 +237,102 @@ def parse_session(path):
     for n, event in enumerate(walk(events), 1):
         event["id"] = f"e{n}"
     return session, events, usage, warnings
+
+
+# USD per million tokens: (input, output, cache read). Cache writes cost 1.25x input (5 min) or 2x input (1 h).
+PRICES = {
+    "claude-fable-5-1": (10.0, 50.0, 0.25),
+    "claude-mythos-5-1": (10.0, 50.0, 0.25),
+    "claude-fable-5": (10.0, 50.0, 1.0),
+    "claude-opus-5-5": (4.0, 20.0, 0.20),
+    "claude-opus-5": (5.0, 25.0, 0.50),
+    "claude-opus-4-8": (5.0, 25.0, 0.50),
+    "claude-opus-4-7": (5.0, 25.0, 0.50),
+    "claude-opus-4-6": (5.0, 25.0, 0.50),
+    "claude-sonnet-5-5": (2.0, 10.0, 0.20),
+    "claude-sonnet-5": (2.0, 10.0, 0.20),
+    "claude-sonnet-4-6": (3.0, 15.0, 0.30),
+    "claude-haiku-5-5": (0.10, 0.50, 0.01),
+    "claude-haiku-4-5": (1.0, 5.0, 0.10),
+}
+
+
+def price_for(model):
+    """Longest known id that prefixes `model`, so 'claude-opus-5-5[1m]' prices as Opus 5.5, not Opus 5."""
+    matches = [known for known in PRICES if model and model.startswith(known)]
+    return PRICES[max(matches, key=len)] if matches else None
+
+
+def message_cost(model, usage):
+    price = price_for(model)
+    if price is None:
+        return None
+    input_price, output_price, read_price = price
+    creation = usage.get("cache_creation") or {}
+    write_1h = creation.get("ephemeral_1h_input_tokens", 0)
+    write_5m = creation.get("ephemeral_5m_input_tokens", usage.get("cache_creation_input_tokens", 0) - write_1h)
+    return (usage.get("input_tokens", 0) * input_price
+            + usage.get("output_tokens", 0) * output_price
+            + usage.get("cache_read_input_tokens", 0) * read_price
+            + write_5m * input_price * 1.25
+            + write_1h * input_price * 2) / 1_000_000
+
+
+VERIFY = re.compile(r"\b(test|tests|pytest|jest|vitest|mocha|phpunit|rspec|unittest|tsc|lint|eslint|build|"
+                    r"cargo\s+check|go\s+vet|make)\b", re.I)
+SHIP = re.compile(r"\bgit\s+(commit|push)\b")
+DENIED = "The user doesn't want to proceed"
+
+
+def _command(event):
+    return (event.get("_input") or {}).get("command", "") if event.get("tool") == "Bash" else ""
+
+
+def _is_verification(event):
+    """A test, build or lint run. A commit whose message mentions tests is not one."""
+    command = _command(event)
+    return bool(command and VERIFY.search(command) and not SHIP.search(command))
+
+
+def _is_denied(event):
+    return ((event.get("permission") or {}).get("decision") == "reject"
+            or event.get("output", "").startswith(DENIED))
+
+
+def compute_metrics(events, usage):
+    seen, cost, unpriced, peak = set(), 0.0, 0, 0
+    totals = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0}
+    for message_id, model, tokens, turn in usage:
+        # One API message is split into one row per content block, each repeating the same usage.
+        if not tokens or model == "<synthetic>" or (message_id and message_id in seen):
+            continue
+        seen.add(message_id)
+        peak = max(peak, tokens.get("input_tokens", 0) + tokens.get("cache_read_input_tokens", 0)
+                   + tokens.get("cache_creation_input_tokens", 0))
+        totals["input_tokens"] += tokens.get("input_tokens", 0)
+        totals["output_tokens"] += tokens.get("output_tokens", 0)
+        totals["cache_read_tokens"] += tokens.get("cache_read_input_tokens", 0)
+        totals["cache_write_tokens"] += tokens.get("cache_creation_input_tokens", 0)
+        message = message_cost(model, tokens)
+        if message is None:
+            unpriced += 1
+            continue
+        cost += message
+        if turn is not None:
+            turn["turn_cost"] += message
+    tools = [e for e in walk(events) if e["kind"] in ("tool_call", "subagent")]
+    changes = [f for e in tools for f in e.get("files", [])]
+    return {
+        "cost_usd_estimate": round(cost, 4),
+        "unpriced_messages": unpriced,
+        **totals,
+        "tool_calls": len(tools),
+        "files_written": len({f["path"] for f in changes}),
+        "lines_added": sum(f["added"] for f in changes),
+        "lines_removed": sum(f["removed"] for f in changes),
+        "developer_turns": sum(1 for e in events if e["kind"] == "user_message"),
+        "verification_runs": sum(1 for e in tools if _is_verification(e)),
+        "denials": sum(1 for e in tools if _is_denied(e)),
+        "compactions": sum(1 for e in walk(events) if e["kind"] == "system"),
+        "peak_context_tokens": peak,
+    }
