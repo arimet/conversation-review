@@ -9,7 +9,7 @@
 :root {
   --page: #ffffff; --surface: #ffffff; --subtle: #f6f7fb; --line: #e4e6ef; --line-strong: #cfd3e1;
   --ink: #0f1222; --text: #23263a; --muted: #5a6074;
-  --blue: #2d3bff; --blue-ink: #2431e0; --blue-50: #eef0ff; --blue-200: #cdd2ff; --on-blue: #ffffff; --on-blue-soft: #dde0ff;
+  --blue: #2d3bff; --blue-ink: #2431e0; --masthead: #2d3bff; --blue-50: #eef0ff; --blue-200: #cdd2ff; --on-blue: #ffffff; --on-blue-soft: #dde0ff;
   --purple: #7b2fff; --purple-50: #f3ecff; --purple-200: #dccbff;
   --green: #087f45; --green-50: #e6f6ee; --amber: #b85c00; --amber-50: #fff3e3; --red: #d3123a; --red-50: #fdebef;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
@@ -19,7 +19,7 @@
   :root {
     --page: #0d0f1a; --surface: #141729; --subtle: #1a1e33; --line: #272b43; --line-strong: #353a57;
     --ink: #f1f2f8; --text: #dfe1ec; --muted: #9da3b8;
-    --blue: #7884ff; --blue-ink: #2431e0; --blue-50: #1b2050; --blue-200: #343c8a; --on-blue: #ffffff; --on-blue-soft: #d5d9ff;
+    --blue: #7884ff; --blue-ink: #2431e0; --masthead: #2531e0; --blue-50: #1b2050; --blue-200: #343c8a; --on-blue: #ffffff; --on-blue-soft: #d5d9ff;
     --purple: #ae86ff; --purple-50: #241a45; --purple-200: #45337f;
     --green: #4cc98a; --green-50: #12291f; --amber: #f0a347; --amber-50: #2e2210; --red: #ff6b86; --red-50: #33141c;
   }
@@ -37,7 +37,7 @@ dd, .counter, .range, .anchor { font-variant-numeric: tabular-nums; }
 .muted { color: var(--muted); }
 
 /* Masthead and tabs */
-.masthead { background: var(--blue); color: var(--on-blue); -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+.masthead { background: var(--masthead); color: var(--on-blue); -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 .masthead-inner, .tabs-inner, .layout { max-width: 1280px; margin: 0 auto; padding-left: 32px; padding-right: 32px; }
 .masthead-inner { padding-top: 28px; padding-bottom: 26px; }
 .crumbs { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font: 13px var(--mono); color: var(--on-blue-soft); overflow-wrap: anywhere; }
