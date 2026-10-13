@@ -115,3 +115,77 @@ def validate(facts, annotations, mode):
                 if not item.get(key):
                     errors.append(f"improvements[{i}].{key}: required")
     return errors
+
+
+def _label(event, depth):
+    if event["kind"] == "user_message":
+        return "Main agent → subagent" if depth else "Developer"
+    if event["kind"] == "assistant_message":
+        return "Subagent" if depth else "Agent"
+    return "System"
+
+
+def _time(event):
+    return event.get("timestamp", "")[11:16]
+
+
+def _first_line(text):
+    return (text or "").strip().splitlines()[0] if (text or "").strip() else ""
+
+
+def _code(text):
+    if not text:
+        return ""
+    return f"`` {text} ``" if "`" in text else f"`{text}`"
+
+
+def _metrics_line(m):
+    cost = f"${m['cost_usd_estimate']:.2f}"
+    if m.get("unpriced_messages"):
+        cost += f" (+{m['unpriced_messages']} unpriced messages)"
+    tokens_in = m["input_tokens"] + m["cache_read_tokens"] + m["cache_write_tokens"]
+    return (f"Cost (estimate): {cost} · Tokens: {tokens_in:,} in / {m['output_tokens']:,} out · "
+            f"Tool calls: {m['tool_calls']} · Files written: {m['files_written']} "
+            f"(+{m['lines_added']} / -{m['lines_removed']})")
+
+
+def _md_event(event, depth):
+    pad = "  " * depth
+    if event["kind"] in ("user_message", "assistant_message", "system"):
+        if depth:
+            return [f"{pad}- `{event['id']}` **{_label(event, depth)}**: {' '.join(event['text'].split())[:500]}"]
+        return [f"### {event['id']} · {_label(event, depth)} · {_time(event)}", "", event["text"], ""]
+    name = "Subagent" if event["kind"] == "subagent" else event["tool"]
+    line = f"{pad}- `{event['id']}` **{name}** {_code(_first_line(event['input_summary']))}".rstrip()
+    changes = ", ".join(f"{f['path']} +{f['added']}/-{f['removed']}" for f in event.get("files", []))
+    line += f" ({changes})" if changes else ""
+    line += " → error" if event.get("error") else ""
+    lines = [line]
+    if event.get("output"):
+        output = event["output"].splitlines()
+        lines += [f"{pad}  ~~~"] + [f"{pad}  {text}" for text in output[:PREVIEW_LINES]]
+        if len(output) > PREVIEW_LINES:
+            lines.append(f"{pad}  … {len(output) - PREVIEW_LINES} more lines")
+        lines.append(f"{pad}  ~~~")
+    for child in event.get("children", []):
+        lines += _md_event(child, depth + 1)
+    if depth == 0:
+        lines.append("")
+    return lines
+
+
+def render_markdown(facts):
+    s = facts["session"]
+    lines = [
+        f"# {s['title']}",
+        "",
+        f"- Date: {s['started_at'][:16].replace('T', ' ')} → {s['ended_at'][:16].replace('T', ' ')}",
+        f"- Model: {s['model']} · Branch: {s['branch']} · Directory: {s['cwd']}",
+        f"- {_metrics_line(facts['metrics'])}",
+        "",
+    ]
+    lines += [f"> Warning: {w}" for w in facts["warnings"]]
+    lines += ["---", ""]
+    for event in facts["events"]:
+        lines += _md_event(event, 0)
+    return "\n".join(lines).rstrip() + "\n"

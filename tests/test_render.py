@@ -72,5 +72,22 @@ class ValidateTest(unittest.TestCase):
         self.assertIn("improvements[1].axis: must be one of intention, evidence, control", errors)
 
 
+class MarkdownTest(unittest.TestCase):
+    def test_transcript(self):
+        md = render.render_markdown(sample_facts())
+        self.assertTrue(md.startswith("# Email sorting strategy\n"))
+        self.assertIn("### e1 · Developer · 10:05", md)
+        self.assertIn("- `e8` **Write** `src/sort.ts` (src/sort.ts +3/-0)", md)
+        self.assertIn("  - `e4` **Main agent → subagent**: Locate tests", md)
+        self.assertIn("  - `e5` **Glob** `**/*.test.ts`", md)
+        self.assertIn("… 10 more lines", md)
+        self.assertIn("Cost (estimate): $17.20", md)
+
+    def test_no_badges_in_export(self):
+        md = render.render_markdown(sample_facts())
+        for word in ("outside_scope", "no_verification", "Evidence", "Control"):
+            self.assertNotIn(word, md)
+
+
 if __name__ == "__main__":
     unittest.main()
