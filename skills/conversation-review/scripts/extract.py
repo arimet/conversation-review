@@ -336,3 +336,97 @@ def compute_metrics(events, usage):
         "compactions": sum(1 for e in walk(events) if e["kind"] == "system"),
         "peak_context_tokens": peak,
     }
+
+
+DESTRUCTIVE = re.compile(
+    r"\brm\s+-[a-z]*(rf|fr)|\bgit\s+push\b.*\s(--force|-f)\b|\bgit\s+reset\s+--hard\b|"
+    r"\bgit\s+clean\s+-[a-z]*f|\bgit\s+branch\s+-D\b|\bdrop\s+(table|database)\b", re.I)
+ACCEPT = re.compile(r"^\s*(ok|okay|lgtm|looks good|great|perfect|nice|thanks|thank you|ship it|go ahead|"
+                    r"commit|push|merge|parfait|merci|top|go)\b", re.I)
+# ponytail: a path-looking token after ':' or '/' is skipped, so URLs are ignored; quoted regexes may false-positive
+SHELL_PATH = re.compile(r"(?<![\w.:/])(~/[^\s'\"|;&)]+|/[^\s'\"|;&)]+|\.\./[^\s'\"|;&)]*)")
+SAFE_PREFIXES = ("/dev/", "/tmp/", "/private/tmp/", "/private/var/folders/", "/var/folders/")
+AUTO_REASONS = {
+    "classifier": "Tool calls auto-approved by the auto mode classifier",
+    "mode": "Tool calls auto-approved by the permission mode",
+}
+COST_SPIKE_SHARE = 0.25
+MIN_TURNS_FOR_SPIKE = 4
+
+
+def _is_outside(path, cwd):
+    if "node_modules" in path.split("/"):
+        return True
+    expanded = os.path.expanduser(path)
+    if expanded.startswith(SAFE_PREFIXES) or expanded == "/dev/null":
+        return False
+    root = cwd.rstrip("/")
+    full = os.path.normpath(os.path.join(root, expanded))
+    return not (full == root or full.startswith(root + "/"))
+
+
+def _outside_paths(event, cwd):
+    tool_input = event.get("_input") or {}
+    if event.get("tool") == "Bash":
+        command = tool_input.get("command", "")
+        candidates = SHELL_PATH.findall(command) + [w for w in command.split() if "node_modules" in w]
+    else:
+        candidates = [tool_input[k] for k in PATH_KEYS if isinstance(tool_input.get(k), str)]
+    return list(dict.fromkeys(p for p in candidates if _is_outside(p, cwd)))
+
+
+def _edits(event):
+    return any(f["added"] or f["removed"] for e in walk([event]) for f in e.get("files", []))
+
+
+def verification_badges(events, cwd):
+    """Main thread only: an acceptance after an edit needs a test, a build or a read of an edited file."""
+    badges, dirty = [], set()
+    for event in events:
+        if event["kind"] in ("tool_call", "subagent") and _edits(event):
+            dirty |= {f["path"] for e in walk([event]) for f in e.get("files", [])}
+            continue
+        if not dirty:
+            continue
+        command = _command(event)
+        read_path = (event.get("_input") or {}).get("file_path", "") if event.get("tool") == "Read" else ""
+        if _is_verification(event) or _relative(read_path, cwd) in dirty:
+            dirty = set()
+        elif (event["kind"] == "user_message" and ACCEPT.match(event["text"])) or SHIP.search(command):
+            badges.append({"event_id": event["id"], "axis": "evidence", "type": "no_verification_since_edit",
+                           "note": "Accepted without a test, build or read of the edited files since the last edit"})
+            dirty = set()
+    if dirty and events:
+        badges.append({"event_id": events[-1]["id"], "axis": "evidence", "type": "no_verification_since_edit",
+                       "note": "Session ended with unverified edits"})
+    return badges
+
+
+def factual_badges(events, cwd, total_cost):
+    badges, auto_seen = [], set()
+
+    def add(event, type_, note):
+        badges.append({"event_id": event["id"], "axis": "control", "type": type_, "note": note})
+
+    for event in walk(events):
+        if event["kind"] not in ("tool_call", "subagent"):
+            continue
+        paths = _outside_paths(event, cwd)
+        if paths:
+            add(event, "outside_scope", f"{event['tool']} {', '.join(paths)}")
+        command = _command(event)
+        if command and DESTRUCTIVE.search(command):
+            add(event, "destructive_command", command[:200])
+        permission = event.get("permission") or {}
+        if _is_denied(event):
+            add(event, "permission", f"Denied ({permission.get('source', 'user')})")
+        elif permission.get("reasonType") in AUTO_REASONS and permission["reasonType"] not in auto_seen:
+            auto_seen.add(permission["reasonType"])
+            add(event, "permission", AUTO_REASONS[permission["reasonType"]])
+    turns = [e for e in events if e["kind"] == "user_message"]
+    if len(turns) >= MIN_TURNS_FOR_SPIKE and total_cost > 0:
+        for turn in turns:
+            if turn["turn_cost"] > COST_SPIKE_SHARE * total_cost:
+                add(turn, "cost_spike",
+                    f"${turn['turn_cost']:.2f} of ${total_cost:.2f} ({turn['turn_cost'] / total_cost:.0%})")
+    return badges + verification_badges(events, cwd)

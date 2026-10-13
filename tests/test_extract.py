@@ -1,6 +1,6 @@
 import unittest
 
-from fixtures import CWD, SessionBuilder, TmpDirCase, marek_session, subagent_session
+from fixtures import CWD, HOME, SessionBuilder, TmpDirCase, marek_session, subagent_session
 import extract
 
 
@@ -136,6 +136,92 @@ class MetricsTest(TmpDirCase):
         b.user("go on")
         m, _ = self.metrics(b)
         self.assertEqual((m["developer_turns"], m["verification_runs"], m["denials"], m["compactions"]), (2, 1, 1, 1))
+
+
+class BadgesTest(TmpDirCase):
+    def badges(self, builder):
+        session, events, usage, _ = extract.parse_session(builder.write(self.tmp))
+        metrics = extract.compute_metrics(events, usage)
+        return extract.factual_badges(events, session["cwd"], metrics["cost_usd_estimate"])
+
+    def of_type(self, badges, type_):
+        return [(b["event_id"], b["note"]) for b in badges if b["type"] == type_]
+
+    def test_marek_session(self):
+        badges = self.badges(marek_session())
+        self.assertEqual(self.of_type(badges, "outside_scope"), [
+            ("e3", f"Read {CWD}/node_modules/ollama/index.js"), ("e4", f"Read {HOME}/.zshrc")])
+        self.assertEqual(self.of_type(badges, "no_verification_since_edit"), [
+            ("e8", "Accepted without a test, build or read of the edited files since the last edit")])
+
+    def test_bash_paths(self):
+        b = SessionBuilder()
+        b.user("go")
+        b.tool("Bash", {"command": "curl https://api.github.com/user 2>/dev/null"})
+        b.tool("Bash", {"command": f"cd {CWD} && ls src"})
+        b.tool("Bash", {"command": "cat ../other-repo/.env"})
+        b.tool("Bash", {"command": "ls ~/Library"})
+        self.assertEqual([e for e, _ in self.of_type(self.badges(b), "outside_scope")], ["e4", "e5"])
+
+    def test_destructive_commands(self):
+        b = SessionBuilder()
+        b.user("clean up")
+        b.tool("Bash", {"command": "rm -rf build"})
+        b.tool("Bash", {"command": "git push --force origin main"})
+        b.tool("Bash", {"command": "git reset --hard HEAD~1"})
+        b.tool("Bash", {"command": "rm build/a.txt && git push origin main"})
+        self.assertEqual([e for e, _ in self.of_type(self.badges(b), "destructive_command")], ["e2", "e3", "e4"])
+
+    def test_permissions(self):
+        auto = {"decision": "accept", "source": "config", "reasonType": "classifier"}
+        b = SessionBuilder()
+        b.user("go")
+        b.tool("Bash", {"command": "ls"}, permission=auto)
+        b.tool("Bash", {"command": "pwd"}, permission=auto)
+        b.tool("Write", {"file_path": f"{CWD}/a"}, output="The user doesn't want to proceed with this tool use.",
+               is_error=True)
+        b.tool("Write", {"file_path": f"{CWD}/b"}, is_error=True,
+               permission={"decision": "reject", "source": "hook", "reasonType": "hook"})
+        self.assertEqual(self.of_type(self.badges(b), "permission"), [
+            ("e2", "Tool calls auto-approved by the auto mode classifier"),
+            ("e4", "Denied (user)"),
+            ("e5", "Denied (hook)")])
+
+    def test_cost_spike_needs_four_turns(self):
+        big = {"input_tokens": 0, "output_tokens": 100_000, "cache_read_input_tokens": 0,
+               "cache_creation_input_tokens": 0}
+        b = SessionBuilder()
+        for text in ("a", "b", "c"):
+            b.user(text).say("ok")
+        b.user("d").say("long", usage=big)
+        self.assertEqual([e for e, _ in self.of_type(self.badges(b), "cost_spike")], ["e7"])
+        short = SessionBuilder()
+        short.user("a").say("long", usage=big)
+        self.assertEqual(self.of_type(self.badges(short), "cost_spike"), [])
+
+    def test_verification_clears_pending_edits(self):
+        b = SessionBuilder()
+        b.user("add a sorter")
+        b.tool("Write", {"file_path": f"{CWD}/src/a.ts"},
+               result={"type": "create", "filePath": f"{CWD}/src/a.ts", "content": "x\n"})
+        b.tool("Bash", {"command": "npm test"})
+        b.user("ok commit")
+        b.tool("Edit", {"file_path": f"{CWD}/src/b.ts"},
+               result={"type": "update", "filePath": f"{CWD}/src/b.ts", "structuredPatch": [{"lines": ["+y"]}]})
+        b.tool("Read", {"file_path": f"{CWD}/src/b.ts"})
+        b.user("great, push")
+        b.tool("Edit", {"file_path": f"{CWD}/src/c.ts"},
+               result={"type": "update", "filePath": f"{CWD}/src/c.ts", "structuredPatch": [{"lines": ["-z"]}]})
+        self.assertEqual(self.of_type(self.badges(b), "no_verification_since_edit"),
+                         [("e8", "Session ended with unverified edits")])
+
+    def test_commit_after_edit_is_flagged_even_if_its_message_mentions_tests(self):
+        b = SessionBuilder()
+        b.user("fix")
+        b.tool("Edit", {"file_path": f"{CWD}/src/a.ts"},
+               result={"type": "update", "filePath": f"{CWD}/src/a.ts", "structuredPatch": [{"lines": ["+x"]}]})
+        b.tool("Bash", {"command": "git commit -am 'fix tests'"})
+        self.assertEqual([e for e, _ in self.of_type(self.badges(b), "no_verification_since_edit")], ["e3"])
 
 
 if __name__ == "__main__":
