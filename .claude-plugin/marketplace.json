@@ -1,7 +1,7 @@
 {
   "name": "conversation-review",
   "owner": {
-    "name": "Marmelab"
+    "name": "Anthony Rimet"
   },
   "metadata": {
     "description": "Conversation reviews for Claude Code sessions."
