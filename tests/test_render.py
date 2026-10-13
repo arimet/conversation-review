@@ -89,5 +89,68 @@ class MarkdownTest(unittest.TestCase):
             self.assertNotIn(word, md)
 
 
+class HtmlTest(unittest.TestCase):
+    def html(self, mode="audit", facts=None):
+        annotations = None if mode == "export" else sample_annotations(mode)
+        return render.render_html(facts or sample_facts(), annotations, mode)
+
+    def test_every_event_and_phase_has_an_anchor(self):
+        html = self.html()
+        for i in range(1, 10):
+            self.assertIn(f'id="e{i}"', html)
+        self.assertIn('id="phase-3"', html)
+
+    def test_audit_has_badges_but_no_verdict(self):
+        html = self.html("audit")
+        self.assertIn("unrequested action", html)
+        self.assertIn("outside scope", html)
+        self.assertNotIn('class="verdict"', html)
+        self.assertNotIn('id="improvements"', html)
+
+    def test_review_adds_verdict_and_improvements(self):
+        html = self.html("review")
+        self.assertIn('class="verdict"', html)
+        self.assertIn('id="improvements"', html)
+        self.assertIn("Run the tests and show me the output before I commit.", html)
+
+    def test_export_has_no_badges_or_filters(self):
+        html = self.html("export")
+        self.assertNotIn('class="badge', html)
+        self.assertNotIn('class="filters"', html)
+        self.assertNotIn('id="summary"', html)
+        self.assertIn('id="e9"', html)
+
+    def test_audit_shows_summary_and_goal_figures_without_lights(self):
+        html = self.html("audit")
+        self.assertIn('id="summary"', html)
+        self.assertIn("Centaur or cyborg?", html)
+        self.assertIn("Not checked: the agent wrote code before any plan was shown.", html)
+        self.assertIn("Human dependency", html)
+        self.assertIn("152,000 tokens", html)
+        self.assertNotIn('class="goal-light"', html)
+        self.assertIn("The conversation is the most important artifact.", html)
+
+    def test_review_adds_goal_lights_and_improvement_tags(self):
+        html = self.html("review")
+        self.assertIn('class="goal-card red"', html)
+        self.assertIn('class="goal-light"', html)
+        self.assertIn('<span class="tag criterion">Steps &amp; context</span>', html)
+        self.assertIn('<span class="tag axis-evidence">Evidence</span>', html)
+
+    def test_text_is_escaped_and_rendered_once(self):
+        facts = sample_facts()
+        facts["session"]["title"] = "Title {{BODY}}"
+        html = self.html("audit", facts)
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", html)
+        self.assertNotIn("<script>alert(1)", html)
+        self.assertEqual(html.count('class="timeline"'), 1)
+
+    def test_consecutive_calls_to_the_same_tool_are_grouped(self):
+        self.assertIn("Read ×2", self.html())
+
+    def test_badged_events_get_filter_classes(self):
+        self.assertRegex(self.html(), r'<details id="e6" class="[^"]*has-control')
+
+
 if __name__ == "__main__":
     unittest.main()

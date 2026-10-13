@@ -189,3 +189,205 @@ def render_markdown(facts):
     for event in facts["events"]:
         lines += _md_event(event, 0)
     return "\n".join(lines).rstrip() + "\n"
+
+
+TEMPLATE = (Path(__file__).resolve().parent / "template.html").read_text(encoding="utf-8")
+AXIS_LABELS = {"intention": "Intent", "evidence": "Evidence", "control": "Control"}
+CRITERION_LABELS = {"correctness": "Correctly", "cost": "Cost", "autonomy": "Human dependency",
+                    "steps_context": "Steps & context"}
+GOAL_LINE = ("Goal: get the largest sensible task done correctly, at the lowest cost, with minimal human "
+             "dependency, in few steps and with as little context as possible.")
+CLOSING_LINE = "The conversation is the most important artifact."
+
+
+def _axes(event, by_event):
+    axes = {b["axis"] for b in by_event.get(event["id"], [])}
+    for child in event.get("children", []):
+        axes |= _axes(child, by_event)
+    return axes
+
+
+def _axis_classes(axes):
+    return " ".join(f"has-{a}" for a in sorted(axes))
+
+
+def _badge(badge):
+    positive = " positive" if badge["type"] == "proof_present" else ""
+    origin = "judgment" if badge.get("judgment") else "detected"
+    return (f'<div class="badge axis-{esc(badge["axis"])}{positive}" data-axis="{esc(badge["axis"])}">'
+            f'<span class="pill">{AXIS_LABELS[badge["axis"]]} · {esc(badge["type"].replace("_", " "))}</span>'
+            f'<span class="origin">{origin}</span> {esc(badge.get("note", ""))}</div>')
+
+
+def _event_html(event, by_event, depth):
+    axes = _axes(event, by_event)
+    classes = f'ev {event["kind"].replace("_", "-")} {_axis_classes(axes)}'.strip()
+    badges = "".join(_badge(b) for b in by_event.get(event["id"], []))
+    anchor = f'<a class="anchor" href="#{event["id"]}">{event["id"]}</a>'
+    if event["kind"] in ("user_message", "assistant_message", "system"):
+        return (f'<article id="{event["id"]}" class="{classes}"><header>{anchor} '
+                f'<span class="who">{_label(event, depth)}</span><time>{esc(_time(event))}</time></header>'
+                f'<div class="text">{esc(event["text"])}</div>{badges}</article>')
+    name = "Subagent" if event["kind"] == "subagent" else event["tool"]
+    changes = "".join(f' <span class="diff">{esc(f["path"])} <ins>+{f["added"]}</ins> <del>-{f["removed"]}</del></span>'
+                      for f in event.get("files", []))
+    error = ' <span class="error">error</span>' if event.get("error") else ""
+    summary = (f'<summary>{anchor} <span class="tool">{esc(name)}</span> '
+               f'<code>{esc(_first_line(event["input_summary"]))}</code>{changes}{error}</summary>')
+    inner = ""
+    if "\n" in event.get("input_summary", "").strip():
+        inner += f'<pre class="input">{esc(event["input_summary"])}</pre>'
+    if event.get("children"):
+        inner += f'<div class="children">{_events_html(event["children"], by_event, depth + 1)}</div>'
+    if event.get("output"):
+        clamp = " clamp" if event.get("output_truncated") else ""
+        inner += f'<pre class="out{clamp}">{esc(event["output"])}</pre>'
+        inner += '<button class="more" type="button">Show all</button>' if clamp else ""
+    is_open = " open" if badges else ""
+    return f'<details id="{event["id"]}" class="{classes}"{is_open}>{summary}{badges}{inner}</details>'
+
+
+def _events_html(events, by_event, depth=0):
+    parts, i = [], 0
+    while i < len(events):
+        event, j = events[i], i
+        if event["kind"] == "tool_call":
+            while j + 1 < len(events) and events[j + 1]["kind"] == "tool_call" and events[j + 1]["tool"] == event["tool"]:
+                j += 1
+        if j > i:
+            run = events[i:j + 1]
+            axes = set().union(*(_axes(e, by_event) for e in run))
+            dots = "".join(f'<span class="dot axis-{a}" title="{a}"></span>' for a in sorted(axes))
+            is_open = " open" if axes else ""
+            parts.append(f'<details class="ev group {_axis_classes(axes)}"{is_open}><summary>'
+                         f'{esc(event["tool"])} ×{len(run)} {dots}</summary>'
+                         + "".join(_event_html(e, by_event, depth) for e in run) + "</details>")
+        else:
+            parts.append(_event_html(event, by_event, depth))
+        i = j + 1
+    return "".join(parts)
+
+
+def _goal_html(facts, badges, goal):
+    m = facts["metrics"]
+    tokens = m["input_tokens"] + m["cache_read_tokens"] + m["cache_write_tokens"] + m["output_tokens"]
+    cost = f"${m['cost_usd_estimate']:.2f}" + ("+" if m.get("unpriced_messages") else "")
+    figures = {
+        "correctness": [
+            ("Test or build runs", m["verification_runs"]),
+            ("Accepted unverified", sum(1 for b in badges if b["type"] == "no_verification_since_edit")),
+            ("Changed", f"+{m['lines_added']} / -{m['lines_removed']} in {m['files_written']} files")],
+        "cost": [("Estimated cost", cost), ("Tokens", f"{tokens:,}")],
+        "autonomy": [
+            ("Developer turns", m["developer_turns"]),
+            ("Denied tool calls", m["denials"]),
+            ("Unclear requests", sum(1 for b in badges if b["type"] == "unclear_request"))],
+        "steps_context": [
+            ("Tool calls", m["tool_calls"]),
+            ("Peak context", f"{m['peak_context_tokens']:,} tokens"),
+            ("Compactions", m["compactions"])],
+    }
+    cards = []
+    for key in CRITERIA:
+        entry = (goal or {}).get(key)
+        level = f' {esc(entry["level"])}' if entry else ""
+        light = (f'<a class="goal-light" href="#{esc(entry["event_id"])}"><span class="level">{esc(entry["level"])}'
+                 f'</span> {esc(entry["reason"])}</a>' if entry else "")
+        rows = "".join(f"<li><span>{esc(k)}</span> <strong>{esc(str(v))}</strong></li>" for k, v in figures[key])
+        cards.append(f'<li class="goal-card{level}"><h3>{esc(CRITERION_LABELS[key])}</h3>'
+                     f'<ul class="figures">{rows}</ul>{light}</li>')
+    return f'<p class="goal-line">{esc(GOAL_LINE)}</p><ul class="goal">{"".join(cards)}</ul>'
+
+
+def _summary_html(summary):
+    def link(event_id):
+        return f' <a class="anchor" href="#{esc(event_id)}">{esc(event_id)}</a>'
+
+    cards = [
+        ("What is the task?", esc(summary["task"]) + link(summary["task_event"])),
+        ("Centaur or cyborg?", f'<strong>{esc(summary["style"].title())}</strong>. {esc(summary["style_reason"])}'),
+        ("How was the strategy checked?", esc(summary["strategy_check"]) + link(summary["strategy_event"])),
+        ("What happened?", esc(summary["story"])),
+    ]
+    return ('<section class="summary" id="summary"><h2>Summary</h2><dl>'
+            + "".join(f"<div><dt>{q}</dt><dd>{a}</dd></div>" for q, a in cards) + "</dl></section>")
+
+
+def _header(facts, mode, annotations, badges):
+    s = facts["session"]
+    meta = " · ".join(esc(x) for x in (s["started_at"][:10], s["model"], s["branch"], s["cwd"]) if x)
+    html = (f'<header class="report-head"><p class="eyebrow">Conversation review</p><h1>{esc(s["title"])}</h1>'
+            f'<p class="meta">{meta}</p>')
+    if mode == "export":
+        return html + f'<p class="meta">{esc(_metrics_line(facts["metrics"]))}</p></header>'
+    verdict = annotations.get("verdict") if mode == "review" else None
+    if verdict:
+        html += '<ul class="verdict">' + "".join(
+            f'<li class="{esc(verdict[a]["level"])}"><a href="#{esc(verdict[a]["event_id"])}">'
+            f'<strong>{AXIS_LABELS[a]}</strong><span class="level">{esc(verdict[a]["level"])}</span></a>'
+            f'<p>{esc(verdict[a]["reason"])}</p></li>' for a in AXES) + "</ul>"
+    html += _goal_html(facts, badges, annotations.get("goal") if mode == "review" else None)
+    return html + _summary_html(annotations["summary"]) + "</header>"
+
+
+def _sidebar(phases, badges, mode):
+    html = '<aside class="sidebar"><nav>'
+    if mode != "export":
+        html += '<p><a href="#summary">Summary</a></p>'
+    html += ('<h2>Phases</h2><ol>'
+             + "".join(f'<li><a href="#phase-{n}">{esc(p["title"])}</a></li>' for n, p in enumerate(phases, 1))
+             + "</ol>")
+    if mode == "review":
+        html += '<p><a href="#improvements">Improvements</a></p>'
+    if mode != "export":
+        counts = Counter(b["axis"] for b in badges)
+        html += ('<h2>Badges</h2><div class="filters"><button type="button" data-filter="" aria-pressed="true">All</button>'
+                 + "".join(f'<button type="button" class="axis-{a}" data-filter="{a}" aria-pressed="false">'
+                           f'{AXIS_LABELS[a]} <span>{counts.get(a, 0)}</span></button>' for a in AXES) + "</div>")
+    return html + "</nav></aside>"
+
+
+def _phases_html(events, phases, by_event):
+    index = {e["id"]: i for i, e in enumerate(events)}
+    parts = []
+    for n, phase in enumerate(phases, 1):
+        chunk = events[index[phase["first_event"]]: index[phase["last_event"]] + 1]
+        parts.append(f'<section class="phase" id="phase-{n}"><h2><span class="phase-n">{n}</span> {esc(phase["title"])}</h2>')
+        if phase.get("summary"):
+            parts.append(f'<p class="phase-summary">{esc(phase["summary"])}</p>')
+        parts.append(_events_html(chunk, by_event) + "</section>")
+    return "".join(parts)
+
+
+def _improvements_html(items):
+    return ('<section class="improvements" id="improvements"><h2>Improvements</h2><ol>'
+            + "".join(f'<li><p><a href="#{esc(i["event_id"])}">{esc(i["event_id"])}</a> '
+                      f'<span class="tag axis-{i["axis"]}">{AXIS_LABELS[i["axis"]]}</span> '
+                      f'<span class="tag criterion">{esc(CRITERION_LABELS[i["criterion"]])}</span> '
+                      f'{esc(i["problem"])}</p>'
+                      f'<p class="label">A prompt that would have avoided it</p>'
+                      f'<blockquote>{esc(i["better_prompt"])}</blockquote></li>' for i in items)
+            + "</ol></section>")
+
+
+def render_html(facts, annotations, mode):
+    events = facts["events"]
+    if mode == "export":
+        phases = ([{"title": "Transcript", "first_event": events[0]["id"], "last_event": events[-1]["id"]}]
+                  if events else [])
+        badges, annotations = [], {}
+    else:
+        phases = annotations["phases"]
+        badges = facts["factual_badges"] + [dict(b, judgment=True) for b in annotations.get("badges", [])]
+    by_event = defaultdict(list)
+    for badge in badges:
+        by_event[badge["event_id"]].append(badge)
+    warnings = "".join(f'<aside class="warning">{esc(w)}</aside>' for w in facts["warnings"])
+    body = (_header(facts, mode, annotations, badges)
+            + _sidebar(phases, badges, mode)
+            + f'<main class="timeline">{warnings}{_phases_html(events, phases, by_event)}'
+            + (_improvements_html(annotations.get("improvements", [])) if mode == "review" else "")
+            + (f'<p class="closing">{esc(CLOSING_LINE)}</p>' if mode != "export" else "")
+            + "</main>")
+    values = {"TITLE": esc(facts["session"]["title"]), "BODY": body}
+    return re.sub(r"\{\{(TITLE|BODY)\}\}", lambda match: values[match.group(1)], TEMPLATE)
