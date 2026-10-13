@@ -203,6 +203,20 @@ class HeaderAndSidebarTest(unittest.TestCase):
         self.assertNotIn("data-filter", html)
 
 
+class RawSessionTest(unittest.TestCase):
+    def test_raw_session_is_the_last_collapsible_block(self):
+        facts = sample_facts()
+        facts["raw"] = [{"file": "sess-1.jsonl", "lines": ['{"type": "user", "text": "<b>hi</b>"}'], "truncated": False}]
+        html = render.render_html(facts, sample_annotations(), "review")
+        self.assertIn('<details class="raw-session" id="raw">', html)
+        self.assertIn("&lt;b&gt;hi&lt;/b&gt;", html)
+        self.assertLess(html.index('id="raw"'), html.index('class="closing"'))
+        self.assertGreater(html.index('id="raw"'), html.index('id="conversation"'))
+
+    def test_reports_without_raw_still_render(self):
+        self.assertNotIn('id="raw"', render.render_html(sample_facts(), sample_annotations(), "review"))
+
+
 class CliTest(TmpDirCase):
     def write(self, name, value):
         path = Path(self.tmp) / name

@@ -174,6 +174,7 @@ Single self-contained file: inline CSS and JS, works offline, light and dark the
 - **Sidebar**: phase list, badge counts per axis acting as filters ("show only Control").
 - **Timeline**: grouped by phase. Developer and agent messages shown in full. Tool calls on one line, expandable; consecutive calls to the same tool grouped (`Read ×14`). Outputs truncated at 20 lines with "Show all". Subagents collapsed under their parent call. Badges inline, next to their event.
 - **Improvements** (`review` only): ranked list, each item linking to its event, with an axis pill and a goal-criterion pill, the problem and the prompt that would have avoided it.
+- **Raw session** (last, collapsed, never printed): the session JSONL and its subagent files, every string redacted like the rest of the report; transcript ids, request ids and thinking signatures are left untouched; capped at 5 MB with a note when cut.
 - **Footer line**: "The conversation is the most important artifact."
 - **Anchors**: every event has `#e<n>` so a reviewer can link to a moment in a PR comment.
 - **Print CSS**: everything expanded, sidebar hidden. The PDF uses this.

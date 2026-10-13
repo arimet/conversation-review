@@ -159,6 +159,19 @@ button { font: inherit; }
 button.more { margin-top: 6px; padding: 0; border: 0; background: none; color: var(--blue); font-size: 13px; font-weight: 500; cursor: pointer; }
 button.more:hover { text-decoration: underline; }
 
+/* Raw session: last, collapsed, never printed */
+.raw-session { margin-top: 40px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.raw-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 12px 16px; cursor: pointer; list-style: none; color: var(--ink); }
+.raw-summary::-webkit-details-marker { display: none; }
+.raw-summary::after { content: "Show"; margin-left: auto; font-size: 13px; font-weight: 500; color: var(--blue); }
+.raw-session[open] > .raw-summary::after { content: "Hide"; }
+.raw-session[open] > .raw-summary { border-bottom: 1px solid var(--line); }
+.raw-summary .icon { color: var(--muted); }
+.raw-summary .muted { font-size: 13px; }
+.raw-file { display: flex; justify-content: space-between; gap: 12px; margin: 16px 16px 6px; font: 600 13px var(--mono); color: var(--ink); }
+.raw-session .hint { margin: 0 16px 6px; }
+pre.raw { margin: 0 16px 16px; max-height: 70vh; overflow: auto; padding: 10px 12px; background: var(--subtle); border: 1px solid var(--line); border-radius: 6px; font-size: 11.5px; line-height: 1.5; white-space: pre; color: var(--text); }
+
 /* Badges: blue when detected, purple when written by Claude */
 .badge { margin: 8px 0 0; padding: 8px 12px; border: 1px solid var(--blue-200); border-radius: 6px; background: var(--blue-50); }
 .badge.judgment { border-color: var(--purple-200); background: var(--purple-50); }
@@ -232,7 +245,7 @@ pre.prompt { margin: 0; padding: 10px 12px; font-size: 13px; line-height: 1.55; 
   .diff { max-width: 100%; order: 4; }
 }
 @media print {
-  .tabs, .sidebar, button.more, .copy { display: none; }
+  .tabs, .sidebar, button.more, .copy, .raw-session { display: none; }
   .layout { display: block; max-width: none; padding: 16px 0 0; }
   .masthead-inner { padding: 0 0 8px; }
   pre.clamp { max-height: none; -webkit-mask-image: none; mask-image: none; }

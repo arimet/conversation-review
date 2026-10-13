@@ -39,7 +39,7 @@ It prints JSON with `title`, `output_name`, `redactions` and `warnings`.
 
 ## 3. Confirm redactions (never skip)
 
-Show the redactions grouped by type with a count per type. List every entry individually (id, masked preview, events) except `high_entropy`, which can run to hundreds of base64 blobs and identifiers: show its count and five examples. Then ask the developer with AskUserQuestion:
+Show the redactions grouped by type with a count per type. An entry whose events say `raw` was found only in the raw session block at the end of the report (thinking, full tool inputs, system rows). List every entry individually (id, masked preview, events) except `high_entropy`, which can run to hundreds of base64 blobs and identifiers: show its count and five examples. Then ask the developer with AskUserQuestion:
 
 - **Continue**: render as is.
 - **Unmask**: some entries are false positives. Rerun step 2 with one `--keep <id>` per entry, or `--keep <type>` for a whole type (for example `--keep high_entropy`).

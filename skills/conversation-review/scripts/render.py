@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from extract import walk  # noqa: E402
+from extract import _map_strings, _strings, walk  # noqa: E402
 from redact import Redactor  # noqa: E402
 
 AXES = ("intention", "evidence", "control")
@@ -518,7 +518,9 @@ def _sidebar(facts, phases, badges, mode):
                  f'<ul class="side-list">{rows or "<li class=hint>No badges.</li>"}</ul>'
                  f'<p class="legend"><span class="key detected"></span>Detected'
                  f'<span class="key judgment"></span>Written by Claude</p></div>')
-    html += f'<div class="side-block"><h2>Phases</h2><ul class="side-list">{items}</ul></div>'
+    raw_link = ('<li><a href="#raw"><span>Raw session</span><span class="range">jsonl</span></a></li>'
+                if facts.get("raw") else "")
+    html += f'<div class="side-block"><h2>Phases</h2><ul class="side-list">{items}{raw_link}</ul></div>'
     return html + "</nav></aside>"
 
 
@@ -549,6 +551,22 @@ def _improvements_html(items):
             f'<ol class="suggestions">{rows}</ol></section>')
 
 
+def _raw_html(raw):
+    if not raw:
+        return ""
+    count = sum(len(f["lines"]) for f in raw)
+    size = sum(len(line) for f in raw for line in f["lines"])
+    parts = []
+    for f in raw:
+        note = ('<p class="hint">Cut short: the report keeps the beginning of long sessions. The full file stays '
+                'in ~/.claude/projects.</p>' if f["truncated"] else "")
+        parts.append(f'<h3 class="raw-file">{esc(f["file"])}<span class="range">{len(f["lines"])} lines</span></h3>'
+                     f'{note}<pre class="raw">{esc(chr(10).join(f["lines"]))}</pre>')
+    return (f'<details class="raw-session" id="raw"><summary class="raw-summary">{_icon("file")}'
+            f'<strong>Raw session</strong><span class="muted">{count} lines · {size / 1024:,.0f} KB · '
+            f'JSONL, redacted like the rest of the report</span></summary>{"".join(parts)}</details>')
+
+
 def render_html(facts, annotations, mode):
     events = facts["events"]
     if mode == "export":
@@ -574,6 +592,7 @@ def render_html(facts, annotations, mode):
             + f'<section id="overview" class="overview">{warnings}{overview}</section>'
             + f'<section id="conversation"><h2 class="section-title">Conversation</h2>'
             + f'{_phases_html(events, phases, by_event)}</section>'
+            + _raw_html(facts.get("raw"))
             + (f'<p class="closing"><strong>{esc(CLOSING_LINE)}</strong> conversation-review is a skill made by '
                f'Anthony RIMET, inspired by Marek Kalnik\'s talk on conversation review (Dev With AI 2026).</p>'
                if mode != "export" else "")
@@ -621,27 +640,6 @@ def print_pdf(html, pdf_path):
             capture_output=True, text=True, timeout=120)
     if result.returncode != 0 or not pdf_path.exists():
         raise PdfError(f"Chrome could not print the PDF: {result.stderr.strip()[:500]}")
-
-
-def _strings(value):
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, dict):
-        for item in value.values():
-            yield from _strings(item)
-    elif isinstance(value, list):
-        for item in value:
-            yield from _strings(item)
-
-
-def _map_strings(value, fn):
-    if isinstance(value, str):
-        return fn(value)
-    if isinstance(value, dict):
-        return {k: _map_strings(v, fn) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_map_strings(v, fn) for v in value]
-    return value
 
 
 def redact_annotations(annotations, home=None):

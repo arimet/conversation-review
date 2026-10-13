@@ -271,6 +271,40 @@ class BuildFactsTest(TmpDirCase):
         facts = self.facts(b)
         self.assertNotIn(ENV_PASSWORD, json.dumps(facts) + extract.digest(facts))
 
+    def test_raw_session_is_kept_redacted(self):
+        b = secrets_session()
+        b.think(f"thinking about {GH_TOKEN}")
+        child = b.subagent("Look around")
+        child.user("Look around")
+        facts = self.facts(b)
+        files = [f["file"] for f in facts["raw"]]
+        self.assertEqual(files, ["sess-secrets.jsonl", "subagents/agent-a1.jsonl"])
+        raw = "\n".join(line for f in facts["raw"] for line in f["lines"])
+        self.assertIn("thinking about [REDACTED:github_token#", raw)
+        for secret in (SECRET_KEY, GH_TOKEN, ENV_PASSWORD, "jane.doe@example.com", HOME + "/"):
+            self.assertNotIn(secret, raw)
+        self.assertEqual(json.loads(facts["raw"][0]["lines"][0])["type"], "user")
+
+    def test_raw_technical_ids_are_left_alone(self):
+        request_id = "req_011CfyAbCdEf1234567890XyZq"
+        b = SessionBuilder()
+        b.raw({"type": "assistant", "requestId": request_id, "message": {
+            "id": "msg_011Cfy1dphVywkSBqPc1qh9C", "role": "assistant", "model": "claude-opus-5-5",
+            "content": [{"type": "thinking", "thinking": "hmm", "signature": "EqoBCkYIBRgCKkB8xK2mQ9vZ7pL3nR5tW1yA"}]}})
+        facts = self.facts(b)
+        raw = facts["raw"][0]["lines"][0]
+        self.assertIn(request_id, raw)
+        self.assertIn("EqoBCkYIBRgCKkB8xK2mQ9vZ7pL3nR5tW1yA", raw)
+        self.assertEqual(facts["redactions"], [])
+
+    def test_raw_session_is_capped(self):
+        b = SessionBuilder()
+        b.user("x" * 2000)
+        b.user("y" * 2000)
+        facts = extract.build_facts(b.write(self.tmp), home=HOME, raw_max_bytes=2500)
+        self.assertEqual(len(facts["raw"][0]["lines"]), 1)
+        self.assertTrue(facts["raw"][0]["truncated"])
+
     def test_keep_and_mask(self):
         first = self.facts(secrets_session())
         email_id = next(r["id"] for r in first["redactions"] if r["type"] == "email")

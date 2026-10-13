@@ -446,6 +446,54 @@ PROJECTS_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".clau
 TEXT_FIELDS = ("text", "input_summary", "output")
 TITLE_MAX = 80
 NOTE_MAX = 200
+RAW_MAX_BYTES = 5_000_000  # ponytail: raw session capped so a 100 MB transcript does not become a 100 MB report
+
+
+# Transcript bookkeeping (ids, request ids, thinking signatures): random-looking, never secret.
+RAW_ID_KEYS = {"id", "uuid", "parentUuid", "leafUuid", "requestId", "sessionId", "promptId", "agentId",
+               "tool_use_id", "toolUseId", "sourceToolUseID", "sourceToolAssistantUUID", "messageId",
+               "signature", "bridgeSessionId"}
+
+
+def _strings(value, skip=()):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            if key not in skip:
+                yield from _strings(item, skip)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _strings(item, skip)
+
+
+def _map_strings(value, fn, skip=()):
+    if isinstance(value, str):
+        return fn(value)
+    if isinstance(value, dict):
+        return {k: v if k in skip else _map_strings(v, fn, skip) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_map_strings(v, fn, skip) for v in value]
+    return value
+
+
+def _raw_files(path, raw_max_bytes):
+    """Transcript rows per file (main session, then subagents), cut once the total reaches raw_max_bytes."""
+    path = Path(path)
+    sub_dir = path.with_suffix("") / "subagents"
+    sources = [(path.name, path)] + [(f"subagents/{p.name}", p) for p in sorted(sub_dir.glob("agent-*.jsonl"))]
+    files, total = [], 0
+    for label, source in sources:
+        rows, kept, truncated = load_jsonl(source)[0], [], False
+        for row in rows:
+            size = len(json.dumps(row, ensure_ascii=False).encode("utf-8"))
+            if total + size > raw_max_bytes:
+                truncated = True
+                break
+            kept.append(row)
+            total += size
+        files.append({"file": label, "rows": kept, "truncated": truncated})
+    return files
 
 
 def _clip(text, limit):
@@ -457,7 +505,7 @@ class SessionNotFound(Exception):
     pass
 
 
-def build_facts(path, keep=(), masks=(), home=None):
+def build_facts(path, keep=(), masks=(), home=None, raw_max_bytes=RAW_MAX_BYTES):
     session, events, usage, warnings = parse_session(path)
     metrics = compute_metrics(events, usage)
     badges = factual_badges(events, session["cwd"], metrics["cost_usd_estimate"])
@@ -475,6 +523,10 @@ def build_facts(path, keep=(), masks=(), home=None):
             redactor.scan(change["path"], event["id"])
     for badge in badges:
         redactor.scan(badge["note"], badge["event_id"])
+    # The raw rows also hold what events leave out (thinking, full tool inputs): scan every string in them.
+    raw = _raw_files(path, raw_max_bytes)
+    for text in _strings([f["rows"] for f in raw], RAW_ID_KEYS):
+        redactor.scan(text, "raw")
     for event in walk(events):
         for key in [k for k in event if k.startswith("_")]:
             del event[key]
@@ -496,6 +548,10 @@ def build_facts(path, keep=(), masks=(), home=None):
         "events": events,
         "factual_badges": badges,
         "redactions": redactor.report(),
+        "raw": [{"file": f["file"], "truncated": f["truncated"],
+                 "lines": [json.dumps(_map_strings(row, redactor.apply, RAW_ID_KEYS), ensure_ascii=False)
+                           for row in f["rows"]]}
+                for f in raw],
         "warnings": [redactor.apply(w) for w in warnings],
     }
 
