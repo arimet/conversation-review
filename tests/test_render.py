@@ -158,6 +158,36 @@ class HtmlTest(unittest.TestCase):
         self.assertRegex(self.html(), r'<details id="e6" class="[^"]*has-control')
 
 
+class MarkdownMessageTest(unittest.TestCase):
+    def test_messages_render_safe_markdown(self):
+        html = render._markdown(
+            "Mon choix : **Gallica**, avec `curl`.\n\n"
+            "| # | API |\n|---|-----|\n| 1 | Gallica <b> |\n\n"
+            "- un\n- deux\n\n"
+            "```bash\nnpm test\n```\n"
+            "## Plan\nVoir [la doc](https://example.org) <script>alert(1)</script>")
+        self.assertIn("<strong>Gallica</strong>", html)
+        self.assertIn("<code>curl</code>", html)
+        self.assertIn("<table><thead><tr><th>#</th><th>API</th></tr></thead>", html)
+        self.assertIn("<td>Gallica &lt;b&gt;</td>", html)
+        self.assertIn("<ul><li>un</li><li>deux</li></ul>", html)
+        self.assertIn('<pre class="code">npm test</pre>', html)
+        self.assertIn("<h4>Plan</h4>", html)
+        self.assertIn('<a href="https://example.org" rel="noopener">la doc</a>', html)
+        self.assertIn("&lt;script&gt;", html)
+        self.assertNotIn("<script>", html)
+
+    def test_javascript_links_are_not_rendered(self):
+        self.assertNotIn("href", render._markdown("[x](javascript:alert(1))"))
+
+
+class CallLineTest(unittest.TestCase):
+    def test_leading_cd_is_dropped_from_the_call_line(self):
+        self.assertEqual(render._first_line("cd /private/tmp/x/scratchpad && npm test\necho done"), "npm test")
+        self.assertEqual(render._first_line("cd src; ls"), "ls")
+        self.assertEqual(render._first_line("ls -la"), "ls -la")
+
+
 class CliTest(TmpDirCase):
     def write(self, name, value):
         path = Path(self.tmp) / name
