@@ -13,6 +13,15 @@ The framework asks three questions:
 - **Evidence**: what did the developer rely on to accept the result?
 - **Control**: did the developer keep control of scope, context, tools and permissions?
 
+The framework judges a conversation against one goal: get the largest sensible task done **correctly**, at the **lowest cost**, with **minimal human dependency**, in **few steps** with as little context as possible. Its conclusion: the conversation becomes the most important artifact.
+
+A report answers four questions:
+
+1. What is the task?
+2. What did the conversation look like: centaur (the developer keeps the plan and delegates long, bounded chunks) or cyborg (developer and agent interleave in short steps)?
+3. How was the technical strategy checked?
+4. What went on during the conversation?
+
 **Primary reader**: a peer or lead who reviews a pull request alongside the conversation that produced it. The developer generates the report and ships it with the PR, or sends it by hand.
 
 ## Scope
@@ -40,11 +49,11 @@ Out of scope for v1: other agents (Codex, Cursor), multi-session reports, hosted
 
 ## Modes
 
-| Mode | Output | Phases and badges | Verdict per axis | Improvements |
-|---|---|---|---|---|
-| `export` | `.md` (+ `.pdf`) | no | no | no |
-| `audit` | `.html` (+ `.pdf`) | yes | no | no |
-| `review` | `.html` (+ `.pdf`) | yes | yes | yes |
+| Mode | Output | Summary (4 questions) | Goal grid | Phases and badges | Verdict per axis | Improvements |
+|---|---|---|---|---|---|---|
+| `export` | `.md` (+ `.pdf`) | no | no | no | no | no |
+| `audit` | `.html` (+ `.pdf`) | yes | figures only | yes | no | no |
+| `review` | `.html` (+ `.pdf`) | yes | figures + light per criterion | yes | yes | yes |
 
 File name: `<YYYY-MM-DD>-<session-slug>.<ext>`, where the slug comes from the session title.
 
@@ -81,8 +90,10 @@ Python 3 standard library only. No third-party dependency.
 ```json
 {
   "session": { "id": "", "title": "", "model": "", "branch": "", "cwd": "~/...", "started_at": "", "ended_at": "" },
-  "metrics": { "cost_usd_estimate": 0, "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0,
-               "tool_calls": 0, "files_written": 0, "lines_added": 0, "lines_removed": 0 },
+  "metrics": { "cost_usd_estimate": 0, "unpriced_messages": 0, "input_tokens": 0, "output_tokens": 0,
+               "cache_read_tokens": 0, "cache_write_tokens": 0, "tool_calls": 0, "files_written": 0,
+               "lines_added": 0, "lines_removed": 0, "developer_turns": 0, "verification_runs": 0,
+               "denials": 0, "compactions": 0, "peak_context_tokens": 0 },
   "events": [
     { "id": "e1", "kind": "user_message|assistant_message|tool_call|subagent|system",
       "timestamp": "", "text": "", "tool": "", "input_summary": "", "output": "", "output_truncated": true,
@@ -97,6 +108,7 @@ Python 3 standard library only. No third-party dependency.
 - Thinking blocks are left out. They are not part of what the developer saw.
 - `cost_usd_estimate` comes from token usage multiplied by a per-model price table in `extract.py`. The report labels it as an estimate.
 - Outputs longer than 20 lines are stored in full but flagged `output_truncated` for display.
+- Goal figures: `developer_turns` counts main-thread developer messages; `verification_runs` counts Bash calls that run tests, builds or linters (not commits); `denials` counts refused tool calls; `compactions` counts context compactions; `peak_context_tokens` is the largest input (fresh + cache read + cache write) sent in one API call.
 
 ### Factual badges (computed by `extract.py`)
 
@@ -114,6 +126,12 @@ Python 3 standard library only. No third-party dependency.
 
 ```json
 {
+  "summary": {
+    "task": "", "task_event": "e1",
+    "style": "centaur|cyborg|mixed", "style_reason": "",
+    "strategy_check": "", "strategy_event": "e5",
+    "story": ""
+  },
   "phases": [ { "title": "Request", "first_event": "e1", "last_event": "e3", "summary": "" } ],
   "badges": [ { "event_id": "e1", "axis": "intention", "type": "unclear_request", "note": "" } ],
   "verdict": {
@@ -121,9 +139,17 @@ Python 3 standard library only. No third-party dependency.
     "evidence":  { "level": "", "reason": "", "event_id": "" },
     "control":   { "level": "", "reason": "", "event_id": "" }
   },
-  "improvements": [ { "event_id": "e1", "problem": "", "better_prompt": "" } ]
+  "goal": {
+    "correctness":   { "level": "green|orange|red", "reason": "", "event_id": "" },
+    "cost":          { "level": "", "reason": "", "event_id": "" },
+    "autonomy":      { "level": "", "reason": "", "event_id": "" },
+    "steps_context": { "level": "", "reason": "", "event_id": "" }
+  },
+  "improvements": [ { "event_id": "e1", "axis": "intention", "criterion": "autonomy", "problem": "", "better_prompt": "" } ]
 }
 ```
+
+`summary` answers the four questions and is required in `audit` and `review`. `story` is 2 to 4 sentences. `strategy_check` says how the technical strategy was validated before implementation (plan requested and reviewed, alternatives compared, throwaway spike), or starts with "Not checked" when it was not. The centaur/cyborg style describes how the work was split; it is not a judgment.
 
 Judgment badge types:
 
@@ -134,18 +160,21 @@ Judgment badge types:
 | evidence | `proof_present` | Positive badge: a test, build or manual check backed the acceptance |
 | control | `unrequested_action` | The agent wrote code, installed, committed or pushed when the request was for a strategy, a question or a plan |
 
-`verdict` and `improvements` are only present in `review` mode. `improvements` holds 3 to 5 items, ranked.
+`verdict`, `goal` and `improvements` are only present in `review` mode. `improvements` holds 3 to 5 items, ranked by impact; each names the axis it addresses and the goal criterion it improves (`correctness`, `cost`, `autonomy`, `steps_context`).
 
-`render.py` rejects the file if a `event_id`, `first_event` or `last_event` does not exist in `facts.json`, if phases overlap or leave events uncovered, or if `verdict`/`improvements` appear in `audit` mode. The error names the faulty field so Claude can fix it.
+`render.py` rejects the file if any event id (`event_id`, `first_event`, `last_event`, `task_event`, `strategy_event`) does not exist in `facts.json`, if `summary` is missing or incomplete, if `style` is not `centaur`, `cyborg` or `mixed`, if phases overlap or leave events uncovered, if an improvement has an unknown axis or criterion, or if `verdict`/`goal`/`improvements` appear in `audit` mode. The error names the faulty field so Claude can fix it.
 
 ## HTML layout
 
 Single self-contained file: inline CSS and JS, works offline, light and dark themes.
 
-- **Header**: session title, date, model, branch, repo; metrics row (cost, tokens, tool calls, files, lines). In `review` mode, three traffic lights with one sentence each, linked to the event.
+- **Header**: session title, date, model, branch, repo, and the goal in one line ("the largest sensible task, correctly, at the lowest cost, with minimal human dependency, in few steps"). In `review` mode, three traffic lights (Intent, Evidence, Control) with one sentence each, linked to the event.
+- **Goal grid**: four boxes. Correctly: verification runs, files and lines changed. Cost: estimated cost, tokens. Human dependency: developer turns, denials, `unclear_request` badges. Steps & context: tool calls, peak context, compactions. In `review` mode each box adds a light and one sentence from `goal`.
+- **Summary**: four question/answer cards (Task, Centaur or cyborg, Strategy check, What happened), each linked to its event when it has one.
 - **Sidebar**: phase list, badge counts per axis acting as filters ("show only Control").
 - **Timeline**: grouped by phase. Developer and agent messages shown in full. Tool calls on one line, expandable; consecutive calls to the same tool grouped (`Read ×14`). Outputs truncated at 20 lines with "Show all". Subagents collapsed under their parent call. Badges inline, next to their event.
-- **Improvements** (`review` only): ranked list, each item linking to its event, with the problem and the prompt that would have avoided it.
+- **Improvements** (`review` only): ranked list, each item linking to its event, with an axis pill and a goal-criterion pill, the problem and the prompt that would have avoided it.
+- **Footer line**: "The conversation is the most important artifact."
 - **Anchors**: every event has `#e<n>` so a reviewer can link to a moment in a PR comment.
 - **Print CSS**: everything expanded, sidebar hidden. The PDF uses this.
 
@@ -177,7 +206,8 @@ Standard library `unittest`, no framework.
 
 - Fixtures in `tests/fixtures/`: 2 or 3 anonymized session JSONL files, one reproducing Marek's case (strategy requested, code written, reads in `node_modules`), one with a subagent, one with planted secrets.
 - `extract.py`: metrics (lines, tokens, cost), factual badges, subagent nesting, redaction (no planted secret appears anywhere in `facts.json`, `digest.txt` or rendered output).
-- `render.py`: invalid event id fails, overlapping phases fail, `audit` with `verdict` fails, HTML contains the expected anchors, Markdown has no badges.
+- `extract.py` goal figures: developer turns, verification runs (a commit whose message mentions tests does not count), denials, compactions, peak context.
+- `render.py`: invalid event id fails, overlapping phases fail, `audit` with `verdict` or `goal` fails, missing `summary` fails, unknown style, axis or criterion fails, HTML contains the expected anchors, the summary cards and the goal grid, review adds lights to the grid and pills to improvements, Markdown has no badges.
 - Claude's judgment is not tested automatically. It is checked by hand on real sessions.
 
 ## Repository layout
