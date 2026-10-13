@@ -168,10 +168,10 @@ Judgment badge types:
 
 Single self-contained file: inline CSS and JS, works offline, light and dark themes.
 
-- **Header**: session title, date, model, branch, repo, and the goal in one line ("the largest sensible task, correctly, at the lowest cost, with minimal human dependency, in few steps"). In `review` mode, three traffic lights (Intent, Evidence, Control) with one sentence each, linked to the event.
+- **Header**: white; session title, one meta line (path, branch unless HEAD, readable model name, date, events, cost) and a "How to read this report" link. Sticky tabs: Overview, Tips (review), Conversation. In `review` mode, Claude's verdict on Intent, Evidence and Control comes first, then the tips.
 - **Goal grid**: four boxes. Correctly: verification runs, files and lines changed. Cost: estimated cost, tokens. Human dependency: developer turns, denials, `unclear_request` badges. Steps & context: tool calls, peak context, compactions. In `review` mode each box adds a light and one sentence from `goal`.
 - **Summary**: four question/answer cards (Task, Centaur or cyborg, Strategy check, What happened), each linked to its event when it has one.
-- **Sidebar**: phase list, badge counts per axis acting as filters ("show only Control").
+- **Sidebar**: badges and phases as jump links (blue = detected, purple = written by Claude), plus links to the glossary and the raw session.
 - **Timeline**: grouped by phase. Developer and agent messages shown in full. Tool calls on one line, expandable; consecutive calls to the same tool grouped (`Read ×14`). Outputs truncated at 20 lines with "Show all". Subagents collapsed under their parent call. Badges inline, next to their event.
 - **Improvements** (`review` only): ranked list, each item linking to its event, with an axis pill and a goal-criterion pill, the problem and the prompt that would have avoided it.
 - **Raw session** (last, collapsed, never printed): the session JSONL and its subagent files, every string redacted like the rest of the report; transcript ids, request ids and thinking signatures are left untouched; capped at 5 MB with a note when cut.
