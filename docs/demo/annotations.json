@@ -1,0 +1,39 @@
+{
+  "summary": {
+    "task": "Propose how to rate-limit the public API, approach only, so the team can choose the store first.",
+    "task_event": "e1",
+    "style": "cyborg",
+    "style_reason": "Short back-and-forth: the developer reacts after each step instead of setting a plan up front.",
+    "strategy_check": "Not checked: the agent compared in-memory and Redis in one table, then implemented in-memory before the team could choose.",
+    "strategy_event": "e6",
+    "story": "The developer asked for an approach. The agent read the server, compared two stores, then installed a package and wrote the middleware without asking. The developer accepted it after the tests passed and committed."
+  },
+  "phases": [
+    {"title": "Request", "first_event": "e1", "last_event": "e2", "summary": "An approach was requested, explicitly not the code."},
+    {"title": "Exploration", "first_event": "e3", "last_event": "e6", "summary": "The agent read the server and the library docs, and compared two stores."},
+    {"title": "Implementation nobody asked for", "first_event": "e7", "last_event": "e10", "summary": "A package installed and 40 lines written before any go-ahead."},
+    {"title": "Verification", "first_event": "e11", "last_event": "e13", "summary": "The developer pushed back, then asked for proof; two tests ran green."},
+    {"title": "Delivery", "first_event": "e14", "last_event": "e15", "summary": "Committed as is."}
+  ],
+  "badges": [
+    {"event_id": "e7", "axis": "control", "type": "unrequested_action", "note": "The request was for an approach; the agent installed a dependency without asking."},
+    {"event_id": "e8", "axis": "control", "type": "unrequested_action", "note": "The middleware was written before the team chose a store, which the developer said they wanted to do."},
+    {"event_id": "e12", "axis": "evidence", "type": "proof_present", "note": "Two tests cover the limit and the 429 response."}
+  ],
+  "verdict": {
+    "intention": {"level": "green", "reason": "The request said what was wanted and what was not: an approach, the store to be chosen with the team.", "event_id": "e1"},
+    "evidence": {"level": "green", "reason": "The developer asked whether it works and got a test run before committing.", "event_id": "e12"},
+    "control": {"level": "red", "reason": "The agent installed a package and wrote code against an explicit 'approach only', and the choice of store was taken away from the team.", "event_id": "e7"}
+  },
+  "goal": {
+    "correctness": {"level": "green", "reason": "The behaviour asked of a rate limiter is covered by two passing tests.", "event_id": "e12"},
+    "cost": {"level": "orange", "reason": "Cheap, but half of it paid for code that was not requested and may be thrown away.", "event_id": "e8"},
+    "autonomy": {"level": "orange", "reason": "The developer had to step in to reframe the work after the fact.", "event_id": "e11"},
+    "steps_context": {"level": "green", "reason": "Eight tool calls and a small context for the whole job.", "event_id": "e5"}
+  },
+  "improvements": [
+    {"event_id": "e1", "axis": "control", "criterion": "autonomy", "problem": "'Just the approach' did not stop the agent; nothing in the request said what to do once the approach was written.", "better_prompt": "Propose how to add rate limiting. Do not install anything or edit files: stop after the proposal and wait for my go-ahead."},
+    {"event_id": "e11", "axis": "control", "criterion": "cost", "problem": "The developer accepted unrequested code instead of reverting it, so the store decision was made by default.", "better_prompt": "Revert the install and the middleware. Keep the comparison table; I will bring it to the team."},
+    {"event_id": "e6", "axis": "intention", "criterion": "correctness", "problem": "The comparison left out what decides the store: how many API instances run in production.", "better_prompt": "Before comparing stores, ask me how many instances serve the API and whether they share state."}
+  ]
+}

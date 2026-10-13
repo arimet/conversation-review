@@ -1,0 +1,16 @@
+{
+  "name": "conversation-review",
+  "version": "0.1.0",
+  "description": "Export, audit and review Claude Code sessions with the Intention / Evidence / Control framework.",
+  "author": {
+    "name": "Anthony Rimet",
+    "url": "https://github.com/arimet"
+  },
+  "license": "MIT",
+  "keywords": [
+    "review",
+    "conversation",
+    "audit",
+    "pull-request"
+  ]
+}
