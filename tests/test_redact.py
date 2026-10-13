@@ -70,5 +70,17 @@ class RedactorTest(unittest.TestCase):
         self.assertEqual(out, "/tmp/claude-501/-~-work/x and ~/.claude/projects/-~-work-mail-app/a "
                               "and -Users-developer-x")
 
+    def test_a_longer_secret_containing_a_known_one_is_masked_whole(self):
+        redactor = Redactor(home="")
+        short, longer = "Zq8vN3xLr7Tw2YpK9sDf4GhJ", "Zq8vN3xLr7Tw2YpK9sDf4GhJextraTail9X"
+        redactor.scan(short, "e1")
+        redactor.scan(longer, "e2")
+        self.assertNotIn("extraTail", redactor.apply(longer))
+
+    def test_keep_accepts_a_whole_type(self):
+        out, redactor = self.redact("blob Zq8vN3xLr7Tw2YpK9sDf4GhJ and sk-" + "a1B2c3D4" * 3, keep={"high_entropy"})
+        self.assertEqual(out, "blob Zq8vN3xLr7Tw2YpK9sDf4GhJ and [REDACTED:api_key#1]")
+        self.assertEqual([r["kept"] for r in redactor.report()], [False, True])
+
 if __name__ == "__main__":
     unittest.main()

@@ -76,6 +76,16 @@ class ParseTest(TmpDirCase):
         _, events, _, _ = self.parse(b)
         self.assertEqual([e["text"] for e in events], ["Real question", "/review src"])
 
+    def test_compaction_summaries_are_not_developer_messages(self):
+        b = SessionBuilder()
+        b.user("Fix the bug")
+        b.raw({"type": "system", "subtype": "compact_boundary", "timestamp": "2026-10-13T11:00:00.000Z"})
+        b.user("This session is being continued from a previous conversation...", isCompactSummary=True)
+        b.user("Now add a test")
+        _, events, _, _ = self.parse(b)
+        self.assertEqual([(e["kind"], e["text"][:14]) for e in events],
+                         [("user_message", "Fix the bug"), ("system", "Context compac"), ("user_message", "Now add a test")])
+
     def test_partial_last_line_is_skipped_with_a_warning(self):
         path = marek_session().write(self.tmp)
         with open(path, "a", encoding="utf-8") as f:
@@ -253,6 +263,13 @@ class BuildFactsTest(TmpDirCase):
                          ["api_key", "email", "env_value", "github_token"])
         self.assertIn("[REDACTED:github_token#", facts["events"][2]["input_summary"])
         self.assertEqual(facts["session"]["cwd"], "~/work/mail-app")
+
+    def test_env_values_read_through_bash_are_redacted(self):
+        b = SessionBuilder()
+        b.user("check config")
+        b.tool("Bash", {"command": "cat .env.local | grep DB"}, output=f"DB_PASSWORD={ENV_PASSWORD}")
+        facts = self.facts(b)
+        self.assertNotIn(ENV_PASSWORD, json.dumps(facts) + extract.digest(facts))
 
     def test_keep_and_mask(self):
         first = self.facts(secrets_session())

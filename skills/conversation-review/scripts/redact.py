@@ -19,6 +19,7 @@ PATTERNS = [
 HIGH_ENTROPY = re.compile(r"[A-Za-z0-9+_\-]{24,}={0,2}")
 CAT_N_PREFIX = re.compile(r"^\s*\d+\t")
 ENV_FILE = re.compile(r"(^|/)\.env[^/]*$")
+ENV_IN_COMMAND = re.compile(r"(^|[\s/'\"=])\.env[\w.\-]*")  # cat .env.local, grep X ../.env
 MIN_ENV_VALUE = 8
 
 
@@ -77,7 +78,8 @@ class Redactor:
                 self._register(match.group(0), type_, event_id)
         for match in HIGH_ENTROPY.finditer(text):
             value = match.group(0)
-            if looks_random(value) and not any(value in known or known in value for known in self.secrets):
+            # A longer string containing a known one is registered too; apply() replaces longest first.
+            if looks_random(value) and not any(value in known for known in self.secrets):
                 self._register(value, "high_entropy", event_id)
 
     def apply(self, text):
@@ -85,13 +87,17 @@ class Redactor:
             return text
         for value in sorted(self.secrets, key=len, reverse=True):
             entry = self.secrets[value]
-            if entry["id"] not in self.keep:
+            if not self._kept(entry):
                 text = text.replace(value, f"[REDACTED:{entry['type']}#{entry['id'].split('#')[1]}]")
         if not self.home:
             return text
         return self.encoded_home.sub("-~", self.home.sub("~", text))
 
+    def _kept(self, entry):
+        """`keep` holds ids (secret#3) or whole types (high_entropy)."""
+        return entry["id"] in self.keep or entry["type"] in self.keep
+
     def report(self):
         return [{"id": e["id"], "type": e["type"], "preview": preview(value), "event_ids": e["event_ids"],
-                 "kept": e["id"] in self.keep}
+                 "kept": self._kept(e)}
                 for value, e in self.secrets.items() if e["event_ids"]]

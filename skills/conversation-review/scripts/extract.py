@@ -11,7 +11,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from redact import ENV_FILE, Redactor  # noqa: E402
+from redact import ENV_FILE, ENV_IN_COMMAND, Redactor  # noqa: E402
 
 OUTPUT_PREVIEW_LINES = 20
 AGENT_TOOLS = ("Agent", "Task")
@@ -131,7 +131,8 @@ def parse_rows(rows, cwd, usage, inherited_turn=None):
     events, tools, turn = [], {}, inherited_turn
     for row in rows:
         kind, message = row.get("type"), row.get("message") or {}
-        if kind == "user" and not row.get("isMeta"):
+        # Compaction summaries are written by Claude Code, not the developer; compact_boundary marks the moment.
+        if kind == "user" and not row.get("isMeta") and not row.get("isCompactSummary"):
             content = message.get("content")
             for block in content if isinstance(content, list) else []:
                 if not isinstance(block, dict) or block.get("type") != "tool_result":
@@ -205,7 +206,7 @@ def _title(rows, limit=80):
     if titles:
         return titles[-1]
     for row in rows:
-        if row.get("type") == "user" and not row.get("isMeta"):
+        if row.get("type") == "user" and not row.get("isMeta") and not row.get("isCompactSummary"):
             text = _user_text((row.get("message") or {}).get("content"))
             if text:
                 return text.splitlines()[0][:limit] if limit else text.splitlines()[0]
@@ -464,7 +465,9 @@ def build_facts(path, keep=(), masks=(), home=None):
     for value in session.values():
         redactor.scan(value if isinstance(value, str) else "")
     for event in walk(events):
-        if event.get("tool") == "Read" and ENV_FILE.search((event.get("_input") or {}).get("file_path", "")):
+        reads_env = (event.get("tool") == "Read" and ENV_FILE.search((event.get("_input") or {}).get("file_path", ""))
+                     or ENV_IN_COMMAND.search(_command(event)))
+        if reads_env:
             redactor.learn_env_file(event.get("output", ""), event["id"])
         for key in TEXT_FIELDS:
             redactor.scan(event.get(key) or "", event["id"])
@@ -582,7 +585,7 @@ def main(argv=None):
     extract_cmd.add_argument("--cwd", default=os.getcwd())
     extract_cmd.add_argument("--session", help="Session id prefix or .jsonl path (default: most recent)")
     extract_cmd.add_argument("--out", required=True)
-    extract_cmd.add_argument("--keep", action="append", default=[], help="Redaction id to leave visible")
+    extract_cmd.add_argument("--keep", action="append", default=[], help="Redaction id (secret#3) or type (high_entropy) to leave visible")
     extract_cmd.add_argument("--mask", action="append", default=[], help="Extra string to redact")
     show_cmd = commands.add_parser("show", help="Print one event in full")
     show_cmd.add_argument("--facts", required=True)

@@ -14,6 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from extract import walk  # noqa: E402
+from redact import Redactor  # noqa: E402
 
 AXES = ("intention", "evidence", "control")
 JUDGMENT_TYPES = {
@@ -31,11 +32,14 @@ PREVIEW_LINES = 20
 
 def _validate_phases(phases, top, errors):
     position = {event_id: i for i, event_id in enumerate(top)}
-    if not phases:
+    if not isinstance(phases, list) or not phases:
         errors.append("phases: at least one phase is required")
         return
     expected = 0
     for i, phase in enumerate(phases):
+        if not isinstance(phase, dict):
+            errors.append(f"phases[{i}]: must be an object")
+            continue
         if not phase.get("title"):
             errors.append(f"phases[{i}].title: required")
         first, last = phase.get("first_event"), phase.get("last_event")
@@ -59,6 +63,9 @@ def _validate_summary(summary, all_ids, errors):
     if not summary:
         errors.append("summary: required (task, style, strategy check, story)")
         return
+    if not isinstance(summary, dict):
+        errors.append("summary: must be an object")
+        return
     for key in SUMMARY_FIELDS:
         if not summary.get(key):
             errors.append(f"summary.{key}: required")
@@ -70,8 +77,14 @@ def _validate_summary(summary, all_ids, errors):
 
 
 def _validate_lights(section, name, keys, all_ids, errors):
+    if not isinstance(section, dict):
+        errors.append(f"{name}: must be an object")
+        return
     for key in keys:
         entry = section.get(key) or {}
+        if not isinstance(entry, dict):
+            errors.append(f"{name}.{key}: must be an object")
+            continue
         if entry.get("level") not in LEVELS:
             errors.append(f"{name}.{key}.level: must be green, orange or red")
         if not entry.get("reason"):
@@ -81,11 +94,16 @@ def _validate_lights(section, name, keys, all_ids, errors):
 
 
 def validate(facts, annotations, mode):
+    if not isinstance(annotations, dict):
+        return ["annotations: must be a JSON object"]
     errors = []
     all_ids = {e["id"] for e in walk(facts["events"])}
     _validate_phases(annotations.get("phases") or [], [e["id"] for e in facts["events"]], errors)
     _validate_summary(annotations.get("summary"), all_ids, errors)
     for i, badge in enumerate(annotations.get("badges") or []):
+        if not isinstance(badge, dict):
+            errors.append(f"badges[{i}]: must be an object")
+            continue
         if badge.get("event_id") not in all_ids:
             errors.append(f"badges[{i}].event_id: unknown event {badge.get('event_id')!r}")
         axis = badge.get("axis")
@@ -99,12 +117,17 @@ def validate(facts, annotations, mode):
             if annotations.get(key):
                 errors.append(f"{key}: not allowed in audit mode")
     if mode == "review":
-        _validate_lights(annotations.get("verdict") or {}, "verdict", AXES, all_ids, errors)
-        _validate_lights(annotations.get("goal") or {}, "goal", CRITERIA, all_ids, errors)
+        for key, keys in (("verdict", AXES), ("goal", CRITERIA)):
+            section = annotations.get(key)
+            _validate_lights({} if section is None else section, key, keys, all_ids, errors)
         items = annotations.get("improvements") or []
-        if not 3 <= len(items) <= 5:
+        if not isinstance(items, list) or not 3 <= len(items) <= 5:
             errors.append(f"improvements: expected 3 to 5 items, got {len(items)}")
+            items = items if isinstance(items, list) else []
         for i, item in enumerate(items):
+            if not isinstance(item, dict):
+                errors.append(f"improvements[{i}]: must be an object")
+                continue
             if item.get("event_id") not in all_ids:
                 errors.append(f"improvements[{i}].event_id: unknown event {item.get('event_id')!r}")
             if item.get("axis") not in AXES:
@@ -434,6 +457,35 @@ def print_pdf(html, pdf_path):
         raise PdfError(f"Chrome could not print the PDF: {result.stderr.strip()[:500]}")
 
 
+def _strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _strings(item)
+
+
+def _map_strings(value, fn):
+    if isinstance(value, str):
+        return fn(value)
+    if isinstance(value, dict):
+        return {k: _map_strings(v, fn) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_map_strings(v, fn) for v in value]
+    return value
+
+
+def redact_annotations(annotations, home=None):
+    """Claude writes annotations from a live, unredacted context: mask what it may have quoted."""
+    redactor = Redactor(str(Path.home()) if home is None else home)
+    for text in _strings(annotations):
+        redactor.scan(text)
+    return _map_strings(annotations, redactor.apply)
+
+
 def _load(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
@@ -453,6 +505,7 @@ def main(argv=None):
             parser.error("--annotations is required for audit and review")
         annotations = _load(args.annotations)
         errors = validate(facts, annotations, args.mode)
+        annotations = redact_annotations(annotations) if not errors else annotations
         if errors:
             print("Invalid annotations:\n" + "\n".join(f"- {e}" for e in errors), file=sys.stderr)
             return 1

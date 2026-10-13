@@ -39,10 +39,10 @@ It prints JSON with `title`, `output_name`, `redactions` and `warnings`.
 
 ## 3. Confirm redactions (never skip)
 
-Show the redactions as a table: id, type, masked preview, events. Then ask the developer with AskUserQuestion:
+Show the redactions grouped by type with a count per type. List every entry individually (id, masked preview, events) except `high_entropy`, which can run to hundreds of base64 blobs and identifiers: show its count and five examples. Then ask the developer with AskUserQuestion:
 
 - **Continue**: render as is.
-- **Unmask**: some entries are false positives. Rerun step 2 with one `--keep <id>` per entry.
+- **Unmask**: some entries are false positives. Rerun step 2 with one `--keep <id>` per entry, or `--keep <type>` for a whole type (for example `--keep high_entropy`).
 - **Mask more**: client names, internal hosts, codenames. Rerun step 2 with one `--mask "<string>"` per string.
 
 Show the table again after a rerun and ask again. When the list is empty, still ask, and say that names, internal hosts and codenames are not detected automatically. Do not render before the developer chooses Continue.
@@ -159,5 +159,6 @@ Use the same green / orange / red scale as the verdict. `event_id` points to the
 ### Rules
 
 - Every claim points to an event id that exists. Open an event with `show` before writing about its output.
+- Quote only from `digest.txt` or `show`, never from your own memory of the session: those are redacted, your context is not. `render.py` masks known secret formats and home paths in annotations as a second net, not as the first.
 - Quote the developer's words when it helps the reader.
 - Write for a peer who reads the PR: plain sentences, specific facts.

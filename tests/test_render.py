@@ -212,5 +212,33 @@ class CliTest(TmpDirCase):
         self.assertEqual(pdf.read_bytes()[:4], b"%PDF")
 
 
+
+class ShapeTest(unittest.TestCase):
+    def test_wrong_shapes_are_named_instead_of_crashing(self):
+        cases = [
+            ({"verdict": {"intention": "green"}}, "verdict.intention: must be an object"),
+            ({"phases": ["x"]}, "phases[0]: must be an object"),
+            ({"summary": "text"}, "summary: must be an object"),
+            ({"badges": [None]}, "badges[0]: must be an object"),
+            ({"improvements": ["x", "y", "z"]}, "improvements[0]: must be an object"),
+            ({"goal": []}, "goal: must be an object"),
+        ]
+        for patch, message in cases:
+            with self.subTest(message=message):
+                ann = dict(sample_annotations(), **patch)
+                self.assertIn(message, render.validate(sample_facts(), ann, "review"))
+        self.assertEqual(render.validate(sample_facts(), [], "review"), ["annotations: must be a JSON object"])
+
+
+class RedactAnnotationsTest(unittest.TestCase):
+    def test_annotation_text_is_redacted(self):
+        ann = sample_annotations()
+        ann["summary"]["story"] = "The developer pasted sk-" + "a1B2c3D4" * 3 + " and read /Users/dev/notes.txt."
+        ann["improvements"][0]["better_prompt"] = "Mail jane.doe@example.com first."
+        clean = render.redact_annotations(ann, home="/Users/dev")
+        self.assertEqual(clean["summary"]["story"], "The developer pasted [REDACTED:api_key#1] and read ~/notes.txt.")
+        self.assertEqual(clean["improvements"][0]["better_prompt"], "Mail [REDACTED:email#2] first.")
+        self.assertEqual(clean["summary"]["task_event"], "e1")
+
 if __name__ == "__main__":
     unittest.main()
