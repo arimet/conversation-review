@@ -1,4 +1,10 @@
+import io
+import json
+import os
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
+from unittest import mock
 
 from fixtures import TmpDirCase, sample_annotations, sample_facts
 import render
@@ -150,6 +156,60 @@ class HtmlTest(unittest.TestCase):
 
     def test_badged_events_get_filter_classes(self):
         self.assertRegex(self.html(), r'<details id="e6" class="[^"]*has-control')
+
+
+class CliTest(TmpDirCase):
+    def write(self, name, value):
+        path = Path(self.tmp) / name
+        path.write_text(json.dumps(value), encoding="utf-8")
+        return str(path)
+
+    def run_main(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = render.main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_export_writes_markdown(self):
+        target = str(Path(self.tmp) / "2026-10-13-v1.2-fix")
+        code, out, _ = self.run_main(["export", "--facts", self.write("facts.json", sample_facts()), "--out", target])
+        self.assertEqual(code, 0)
+        self.assertTrue(Path(target + ".md").exists())
+        self.assertEqual(out.strip(), target + ".md")
+
+    def test_review_writes_html(self):
+        target = str(Path(self.tmp) / "report")
+        code, _, _ = self.run_main(["review", "--facts", self.write("facts.json", sample_facts()),
+                                    "--annotations", self.write("ann.json", sample_annotations()), "--out", target])
+        self.assertEqual(code, 0)
+        self.assertIn('class="verdict"', Path(target + ".html").read_text(encoding="utf-8"))
+
+    def test_invalid_annotations_exit_1_and_name_the_field(self):
+        ann = sample_annotations()
+        ann["badges"][0]["event_id"] = "e99"
+        code, _, err = self.run_main(["review", "--facts", self.write("facts.json", sample_facts()),
+                                      "--annotations", self.write("ann.json", ann),
+                                      "--out", str(Path(self.tmp) / "report")])
+        self.assertEqual(code, 1)
+        self.assertIn("- badges[0].event_id: unknown event 'e99'", err)
+        self.assertFalse((Path(self.tmp) / "report.html").exists())
+
+    def test_missing_browser_keeps_the_html(self):
+        target = str(Path(self.tmp) / "report")
+        with mock.patch.dict(os.environ, {"CHROME_PATH": ""}), mock.patch.object(render, "CHROME_CANDIDATES", []):
+            code, _, err = self.run_main(["audit", "--facts", self.write("facts.json", sample_facts()),
+                                          "--annotations", self.write("ann.json", sample_annotations("audit")),
+                                          "--out", target, "--pdf"])
+        self.assertEqual(code, 0)
+        self.assertTrue(Path(target + ".html").exists())
+        self.assertIn("PDF skipped", err)
+        self.assertIn("CHROME_PATH", err)
+
+    @unittest.skipUnless(render.find_chrome(), "no Chrome or Chromium installed")
+    def test_pdf_is_printed(self):
+        pdf = Path(self.tmp) / "report.pdf"
+        render.print_pdf(render.render_html(sample_facts(), sample_annotations(), "review"), pdf)
+        self.assertEqual(pdf.read_bytes()[:4], b"%PDF")
 
 
 if __name__ == "__main__":

@@ -391,3 +391,87 @@ def render_html(facts, annotations, mode):
             + "</main>")
     values = {"TITLE": esc(facts["session"]["title"]), "BODY": body}
     return re.sub(r"\{\{(TITLE|BODY)\}\}", lambda match: values[match.group(1)], TEMPLATE)
+
+
+CHROME_CANDIDATES = [
+    "google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome", "msedge",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+]
+
+
+class PdfError(Exception):
+    pass
+
+
+def find_chrome():
+    custom = os.environ.get("CHROME_PATH")
+    if custom and os.path.exists(custom):
+        return custom
+    for candidate in CHROME_CANDIDATES:
+        found = shutil.which(candidate) or (candidate if os.path.isabs(candidate) and os.path.exists(candidate) else None)
+        if found:
+            return found
+    return None
+
+
+def print_pdf(html, pdf_path):
+    chrome = find_chrome()
+    if not chrome:
+        raise PdfError("no Chrome or Chromium found. Install Google Chrome, or set CHROME_PATH to a "
+                       "Chromium-based browser.")
+    pdf_path = Path(pdf_path).resolve()
+    with tempfile.TemporaryDirectory() as tmp:
+        page = Path(tmp) / "print.html"
+        page.write_text(html.replace("<details", "<details open"), encoding="utf-8")
+        result = subprocess.run(
+            [chrome, "--headless", "--disable-gpu", "--no-pdf-header-footer", "--print-to-pdf-no-header",
+             f"--print-to-pdf={pdf_path}", page.as_uri()],
+            capture_output=True, text=True, timeout=120)
+    if result.returncode != 0 or not pdf_path.exists():
+        raise PdfError(f"Chrome could not print the PDF: {result.stderr.strip()[:500]}")
+
+
+def _load(path):
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("mode", choices=MODES)
+    parser.add_argument("--facts", required=True)
+    parser.add_argument("--annotations")
+    parser.add_argument("--out", required=True, help="Output path without extension")
+    parser.add_argument("--pdf", action="store_true")
+    args = parser.parse_args(argv)
+
+    facts, annotations = _load(args.facts), None
+    if args.mode != "export":
+        if not args.annotations:
+            parser.error("--annotations is required for audit and review")
+        annotations = _load(args.annotations)
+        errors = validate(facts, annotations, args.mode)
+        if errors:
+            print("Invalid annotations:\n" + "\n".join(f"- {e}" for e in errors), file=sys.stderr)
+            return 1
+    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+    html = render_html(facts, annotations, args.mode)
+    if args.mode == "export":
+        target, content = Path(args.out + ".md"), render_markdown(facts)
+    else:
+        target, content = Path(args.out + ".html"), html
+    target.write_text(content, encoding="utf-8")
+    print(target)
+    if args.pdf:
+        try:
+            print_pdf(html, args.out + ".pdf")
+            print(args.out + ".pdf")
+        except (PdfError, subprocess.TimeoutExpired) as error:
+            print(f"PDF skipped: {error}", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
