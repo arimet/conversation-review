@@ -152,6 +152,11 @@ body[data-filter="control"] .ev:not(.has-control) { display: none; }
 <div class="layout">{{BODY}}</div>
 <script>
 document.addEventListener('click', (event) => {
+  const link = event.target.closest('a[href^="#"]');
+  if (link) {
+    reveal(link.getAttribute('href').slice(1));
+    return;
+  }
   const more = event.target.closest('button.more');
   if (more) {
     const pre = more.previousElementSibling;
@@ -168,8 +173,10 @@ document.addEventListener('click', (event) => {
     }
   }
 });
-function reveal() {
-  const target = location.hash && document.getElementById(location.hash.slice(1));
+// Opens the collapsed parents of a target. Also runs on click: re-clicking the current #eN fires no hashchange.
+function reveal(id) {
+  id = id || location.hash.slice(1);
+  const target = id && document.getElementById(id);
   if (!target) return;
   let details = target.tagName === 'DETAILS' ? target : target.closest('details');
   while (details) {
@@ -178,7 +185,7 @@ function reveal() {
   }
   target.scrollIntoView();
 }
-window.addEventListener('hashchange', reveal);
+window.addEventListener('hashchange', () => reveal());
 reveal();
 </script>
 </body>

@@ -84,7 +84,7 @@ def _result_text(content):
 
 def _tool_summary(name, tool_input, cwd):
     if not isinstance(tool_input, dict):
-        return str(tool_input)[:200]
+        return str(tool_input)
     if name == "Bash":
         return tool_input.get("command", "")
     if name in ("Grep", "Glob"):
@@ -98,7 +98,7 @@ def _tool_summary(name, tool_input, cwd):
     for key in ("url", "query", "skill", "description"):
         if tool_input.get(key):
             return str(tool_input[key])
-    return json.dumps(tool_input, ensure_ascii=False)[:200]
+    return json.dumps(tool_input, ensure_ascii=False)
 
 
 def _file_changes(result, cwd):
@@ -200,7 +200,7 @@ def attach_subagents(session_path, events, cwd, usage, warnings):
         pending = [p for p in pending if p not in attached]
 
 
-def _title(rows):
+def _title(rows, limit=80):
     titles = [r["customTitle"] for r in rows if r.get("type") == "custom-title" and r.get("customTitle")]
     if titles:
         return titles[-1]
@@ -208,7 +208,7 @@ def _title(rows):
         if row.get("type") == "user" and not row.get("isMeta"):
             text = _user_text((row.get("message") or {}).get("content"))
             if text:
-                return text.splitlines()[0][:80]
+                return text.splitlines()[0][:limit] if limit else text.splitlines()[0]
     return ""
 
 
@@ -221,7 +221,7 @@ def session_info(path, rows):
     stamped = [r["timestamp"] for r in rows if r.get("timestamp")]
     return {
         "id": Path(path).stem,
-        "title": _title(rows) or Path(path).stem,
+        "title": _title(rows, limit=None) or Path(path).stem,  # truncated after redaction, in build_facts
         "model": models.most_common(1)[0][0] if models else "",
         "branch": next((r["gitBranch"] for r in rows if r.get("gitBranch")), ""),
         "cwd": next((r["cwd"] for r in rows if r.get("cwd")), ""),
@@ -349,6 +349,10 @@ ACCEPT = re.compile(r"^\s*(ok|okay|lgtm|looks good|great|perfect|nice|thanks|tha
 # ponytail: a path-looking token after ':' or '/' is skipped, so URLs are ignored; quoted regexes may false-positive
 SHELL_PATH = re.compile(r"(?<![\w.:/])(~/[^\s'\"|;&)]+|/[^\s'\"|;&)]+|\.\./[^\s'\"|;&)]*)")
 SAFE_PREFIXES = ("/dev/", "/tmp/", "/private/tmp/", "/private/var/folders/", "/var/folders/")
+# A shell token starting with "/" is only a path when its first segment is a real root, not a regex like /\p{M}/gu.
+SHELL_ROOTS = {"Users", "home", "root", "etc", "var", "opt", "usr", "bin", "sbin", "Library", "System",
+               "Applications", "Volumes", "private", "srv", "mnt", "tmp", "dev"}
+HARNESS_DIR = "/.claude/projects/"  # transcripts, tool results and memory written by Claude Code itself
 AUTO_REASONS = {
     "classifier": "Tool calls auto-approved by the auto mode classifier",
     "mode": "Tool calls auto-approved by the permission mode",
@@ -361,7 +365,7 @@ def _is_outside(path, cwd):
     if "node_modules" in path.split("/"):
         return True
     expanded = os.path.expanduser(path)
-    if expanded.startswith(SAFE_PREFIXES) or expanded == "/dev/null":
+    if expanded.startswith(SAFE_PREFIXES) or expanded == "/dev/null" or HARNESS_DIR in expanded:
         return False
     root = cwd.rstrip("/")
     full = os.path.normpath(os.path.join(root, expanded))
@@ -372,7 +376,9 @@ def _outside_paths(event, cwd):
     tool_input = event.get("_input") or {}
     if event.get("tool") == "Bash":
         command = tool_input.get("command", "")
-        candidates = SHELL_PATH.findall(command) + [w for w in command.split() if "node_modules" in w]
+        candidates = [p for p in SHELL_PATH.findall(command)
+                      if not p.startswith("/") or p.split("/")[1] in SHELL_ROOTS]
+        candidates += [w for w in command.split() if "node_modules" in w]
     else:
         candidates = [tool_input[k] for k in PATH_KEYS if isinstance(tool_input.get(k), str)]
     return list(dict.fromkeys(p for p in candidates if _is_outside(p, cwd)))
@@ -419,7 +425,7 @@ def factual_badges(events, cwd, total_cost):
             add(event, "outside_scope", f"{event['tool']} {', '.join(paths)}")
         command = _command(event)
         if command and DESTRUCTIVE.search(command):
-            add(event, "destructive_command", command[:200])
+            add(event, "destructive_command", command)
         permission = event.get("permission") or {}
         if _is_denied(event):
             add(event, "permission", f"Denied ({permission.get('source', 'user')})")
@@ -437,6 +443,12 @@ def factual_badges(events, cwd, total_cost):
 
 PROJECTS_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))) / "projects"
 TEXT_FIELDS = ("text", "input_summary", "output")
+TITLE_MAX = 80
+NOTE_MAX = 200
+
+
+def _clip(text, limit):
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 DIGEST_TEXT = 300
 
 
@@ -470,10 +482,13 @@ def build_facts(path, keep=(), masks=(), home=None):
                 event[key] = redactor.apply(event[key])
         for change in event.get("files", []):
             change["path"] = redactor.apply(change["path"])
+    # Redact first, then truncate: a secret or home path cut in half would no longer match.
     for badge in badges:
-        badge["note"] = redactor.apply(badge["note"])
+        badge["note"] = _clip(redactor.apply(badge["note"]), NOTE_MAX)
+    session = {k: redactor.apply(v) if isinstance(v, str) else v for k, v in session.items()}
+    session["title"] = _clip(session["title"], TITLE_MAX)
     return {
-        "session": {k: redactor.apply(v) if isinstance(v, str) else v for k, v in session.items()},
+        "session": session,
         "metrics": metrics,
         "events": events,
         "factual_badges": badges,
@@ -504,7 +519,7 @@ def digest(facts):
         "",
         "Factual badges:",
     ]
-    lines += [f"  {b['event_id']} {b['axis']}/{b['type']}: {b['note'][:DIGEST_TEXT]}"
+    lines += [f"  {b['event_id']} {b['axis']}/{b['type']}: {' '.join(b['note'].split())[:DIGEST_TEXT]}"
               for b in facts["factual_badges"]] or ["  (none)"]
     lines += ["", "Events (open one in full with: extract.py show --facts <facts.json> <id>):"]
 

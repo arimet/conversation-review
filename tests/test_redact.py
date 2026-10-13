@@ -64,5 +64,11 @@ class RedactorTest(unittest.TestCase):
         self.assertEqual(redactor.report(), [])
 
 
+    def test_dash_encoded_home_in_claude_paths_is_shortened(self):
+        out, _ = self.redact("/tmp/claude-501/-Users-dev-work/x and ~/.claude/projects/-Users-dev-work-mail-app/a "
+                             "and -Users-developer-x")
+        self.assertEqual(out, "/tmp/claude-501/-~-work/x and ~/.claude/projects/-~-work-mail-app/a "
+                              "and -Users-developer-x")
+
 if __name__ == "__main__":
     unittest.main()

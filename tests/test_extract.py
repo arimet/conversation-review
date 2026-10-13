@@ -169,6 +169,16 @@ class BadgesTest(TmpDirCase):
         b.tool("Bash", {"command": "ls ~/Library"})
         self.assertEqual([e for e, _ in self.of_type(self.badges(b), "outside_scope")], ["e4", "e5"])
 
+    def test_shell_regexes_and_harness_files_are_not_out_of_scope(self):
+        b = SessionBuilder()
+        b.user("go")
+        b.tool("Bash", {"command": "node -e \"s.replace(/\\p{M}/gu, '').replace(/ABEILLE|ANIMAL/, '')\" | grep '/issue>'"})
+        b.tool("Bash", {"command": "cut -c1-70 ~/.claude/projects/-x/abc/tool-results/b9.txt"})
+        b.tool("Write", {"file_path": f"{HOME}/.claude/projects/-x/memory/notes.md"})
+        b.tool("Bash", {"command": "cat /etc/hosts /Users/someone/secret.txt"})
+        self.assertEqual(self.of_type(self.badges(b), "outside_scope"),
+                         [("e5", "Bash /etc/hosts, /Users/someone/secret.txt")])
+
     def test_destructive_commands(self):
         b = SessionBuilder()
         b.user("clean up")
@@ -266,6 +276,23 @@ class BuildFactsTest(TmpDirCase):
         self.assertIn("e3 control/outside_scope: Read ~/work/mail-app/node_modules/ollama/index.js", text)
         self.assertIn("e1 USER Propose a strategy", text)
         self.assertTrue(all(len(line) <= extract.DIGEST_TEXT + 40 for line in text.splitlines()))
+
+    def test_digest_badge_lines_stay_on_one_line(self):
+        b = SessionBuilder()
+        b.user("clean")
+        b.tool("Bash", {"command": "rm -rf build &&\nmkdir build"})
+        text = extract.digest(self.facts(b))
+        self.assertIn("e2 control/destructive_command: rm -rf build && mkdir build", text)
+
+    def test_text_is_redacted_before_it_is_truncated(self):
+        b = SessionBuilder()
+        b.user("a" * 75 + f" {HOME}/x")
+        b.tool("Bash", {"command": "rm -rf build && " + "x" * 180 + f" {HOME}/work/file"})
+        b.tool("mcp__notes__save", {"payload": "a" * 190 + f"{HOME}/x"})
+        facts = self.facts(b)
+        self.assertNotIn("/Us", facts["session"]["title"])
+        self.assertNotIn("/Us", facts["factual_badges"][0]["note"])
+        self.assertNotIn("/Us", facts["events"][2]["input_summary"])
 
     def test_output_name(self):
         session = {"id": "abc12345-x", "title": "Stratégie: tri des e-mails!", "started_at": "2026-10-13T10:00:00Z"}

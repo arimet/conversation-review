@@ -39,7 +39,11 @@ def preview(value):
 
 class Redactor:
     def __init__(self, home="", keep=(), masks=()):
-        self.home = re.compile(re.escape(home.rstrip("/")) + r"(?![A-Za-z0-9_.\-])") if home else None
+        home = home.rstrip("/")
+        # Claude Code also writes the home path dash-encoded in its own folders: /Users/jane -> -Users-jane
+        encoded = re.sub(r"[^A-Za-z0-9]", "-", home)
+        self.home = re.compile(re.escape(home) + r"(?![A-Za-z0-9_.\-])") if home else None
+        self.encoded_home = re.compile(re.escape(encoded) + r"(?![A-Za-z0-9_.])") if home else None
         self.keep = set(keep)
         self.secrets = {}  # value -> {"id", "type", "event_ids"}, in order of first appearance
         for n, value in enumerate((m for m in masks if m), 1):
@@ -83,7 +87,9 @@ class Redactor:
             entry = self.secrets[value]
             if entry["id"] not in self.keep:
                 text = text.replace(value, f"[REDACTED:{entry['type']}#{entry['id'].split('#')[1]}]")
-        return self.home.sub("~", text) if self.home else text
+        if not self.home:
+            return text
+        return self.encoded_home.sub("-~", self.home.sub("~", text))
 
     def report(self):
         return [{"id": e["id"], "type": e["type"], "preview": preview(value), "event_ids": e["event_ids"],
